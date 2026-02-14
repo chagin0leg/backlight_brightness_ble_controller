@@ -37,6 +37,7 @@ dependencies:
   flutter_displaymode: ^0.6.0
   flutter_launcher_icons: ^0.13.1
   get: ^4.6.6
+  google_mobile_ads: ^7.0.0
   shared_preferences: ^2.5.4
   url_launcher: ^6.3.2
   win_ble: ^1.0.1

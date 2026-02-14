@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:developer';
 import 'dart:typed_data';
 
+import 'package:backlight_brightness_ble_controller/ads/ad_controller.dart';
 import 'package:backlight_brightness_ble_controller/auth/auth_controller.dart';
 import 'package:backlight_brightness_ble_controller/auth/auth_provider.dart';
 import 'package:backlight_brightness_ble_controller/cloud/app_cloud_config.dart';
@@ -12,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:backlight_brightness_ble_controller/brightness.dart';
 import 'package:get/get.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:backlight_brightness_ble_controller/unknown_device_diagnostics.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:win_ble/win_ble.dart';
@@ -52,6 +54,7 @@ class _MyAppState extends State<MyApp> {
   final BrightnessController brightnessController =
       Get.put(BrightnessController());
   final AuthController authController = Get.put(AuthController());
+  final AdController adController = Get.put(AdController());
 
   Timer? restart;
 
@@ -59,6 +62,7 @@ class _MyAppState extends State<MyApp> {
     status.value = 'Loading cloud configuration';
     appCloudConfig = await AppCloudConfigLoader.load();
     await authController.configure(appCloudConfig);
+    await adController.configure(appCloudConfig.ads);
     _applyDiagnosticsCloudConfig(appCloudConfig);
     cloudStatus.value = 'Cloud backend: ${_backendLabel(appCloudConfig.backendKind)}';
 
@@ -199,6 +203,276 @@ class _MyAppState extends State<MyApp> {
     authFlowStatus.value = 'Pending sign-in was cancelled.';
   }
 
+  Widget _buildSectionCard({
+    required IconData icon,
+    required String title,
+    required List<Widget> children,
+  }) {
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: <Widget>[
+                Icon(icon, size: 18),
+                const SizedBox(width: 6),
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleSmall,
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            ...children,
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCloudSection() {
+    return _buildSectionCard(
+      icon: Icons.cloud_outlined,
+      title: 'Cloud status',
+      children: <Widget>[
+        Text(cloudStatus.value, textAlign: TextAlign.center),
+      ],
+    );
+  }
+
+  Widget _buildAuthSection() {
+    final widgets = <Widget>[
+      Text(authController.status.value, textAlign: TextAlign.center),
+    ];
+
+    if (authController.session.value != null) {
+      widgets.addAll(<Widget>[
+        const SizedBox(height: 8),
+        Text(
+          'Signed in as: ${authController.session.value!.displayName}',
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Session valid until: ${authController.session.value!.expiresAtUtc.toLocal()}',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton(
+          onPressed: () => authController.signOut(reason: 'Signed out by user'),
+          child: const Text('Sign out'),
+        ),
+      ]);
+    } else if (!authController.isSignInPending.value) {
+      widgets.addAll(<Widget>[
+        const SizedBox(height: 8),
+        const Text(
+          'Onboarding: 1) Ensure local server is reachable, '
+          '2) press Google sign-in, 3) confirm in browser.',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 12),
+        ),
+      ]);
+    }
+
+    if (authController.options.isNotEmpty) {
+      widgets.addAll(<Widget>[
+        const SizedBox(height: 8),
+        Wrap(
+          alignment: WrapAlignment.center,
+          spacing: 8,
+          runSpacing: 8,
+          children: authController.options
+              .map(
+                (option) => OutlinedButton(
+                  onPressed: option.enabled
+                      ? () => _startAuthFlow(option.provider)
+                      : null,
+                  child: Text(option.displayName),
+                ),
+              )
+              .toList(growable: false),
+        ),
+      ]);
+    }
+
+    if (authController.isSignInPending.value) {
+      widgets.addAll(<Widget>[
+        const SizedBox(height: 8),
+        const SizedBox(
+          width: 220,
+          child: LinearProgressIndicator(minHeight: 3),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          alignment: WrapAlignment.center,
+          spacing: 8,
+          runSpacing: 8,
+          children: <Widget>[
+            OutlinedButton(
+              onPressed: _reopenPendingAuthUrl,
+              child: const Text('Open auth URL again'),
+            ),
+            OutlinedButton(
+              onPressed: _cancelPendingAuthFlow,
+              child: const Text('Cancel sign-in'),
+            ),
+          ],
+        ),
+      ]);
+      if (authController.pendingSessionId.value != null) {
+        widgets.addAll(<Widget>[
+          const SizedBox(height: 6),
+          Text(
+            'Pending session: ${authController.pendingSessionId.value}',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 11),
+          ),
+        ]);
+      }
+    }
+
+    if (authController.pollErrorCount.value > 0) {
+      widgets.addAll(<Widget>[
+        const SizedBox(height: 6),
+        Text(
+          'Auth polling errors: ${authController.pollErrorCount.value}',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12),
+        ),
+      ]);
+    }
+
+    if (authController.sessionWarning.value != null) {
+      widgets.addAll(<Widget>[
+        const SizedBox(height: 6),
+        Text(
+          authController.sessionWarning.value!,
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12),
+        ),
+      ]);
+    }
+
+    if (authFlowStatus.value.isNotEmpty) {
+      widgets.addAll(<Widget>[
+        const SizedBox(height: 6),
+        Text(
+          authFlowStatus.value,
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12),
+        ),
+      ]);
+    }
+
+    return _buildSectionCard(
+      icon: Icons.lock_outline,
+      title: 'Authentication',
+      children: widgets,
+    );
+  }
+
+  Widget _buildDeviceSection() {
+    return _buildSectionCard(
+      icon: Icons.bluetooth_audio_outlined,
+      title: 'Device sync',
+      children: <Widget>[
+        Text(status.value, textAlign: TextAlign.center),
+        const SizedBox(height: 8),
+        Text(profileStatus.value, textAlign: TextAlign.center),
+        const SizedBox(height: 8),
+        Text(
+          'Screen brightness: ${brightnessController.value.value ?? '-'}',
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 6),
+        Text(
+          'Brightness source: ${brightnessController.providerLabel.value}',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDiagnosticsSection() {
+    final children = <Widget>[
+      CheckboxListTile(
+        value: diagnosticsUploadConsent.value,
+        onChanged: (value) => diagnosticsUploadConsent.value = value ?? false,
+        dense: true,
+        contentPadding: EdgeInsets.zero,
+        controlAffinity: ListTileControlAffinity.leading,
+        title: const Text(
+          'Share unknown device diagnostics (opt-in)',
+          style: TextStyle(fontSize: 12),
+        ),
+      ),
+    ];
+    if (diagnosticsStatus.value.isNotEmpty) {
+      children.add(
+        Text(
+          diagnosticsStatus.value,
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12),
+        ),
+      );
+    }
+
+    return _buildSectionCard(
+      icon: Icons.bug_report_outlined,
+      title: 'Diagnostics',
+      children: children,
+    );
+  }
+
+  Widget _buildAdSection() {
+    final adStatus = adController.status.value;
+    final banner = adController.bannerAd.value;
+    final visible = adController.bannerVisible.value && banner != null;
+
+    final children = <Widget>[
+      Text(
+        adStatus,
+        textAlign: TextAlign.center,
+        style: const TextStyle(fontSize: 12),
+      ),
+    ];
+
+    if (visible) {
+      children.addAll(<Widget>[
+        const SizedBox(height: 8),
+        Center(
+          child: SizedBox(
+            width: banner.size.width.toDouble(),
+            height: banner.size.height.toDouble(),
+            child: AdWidget(ad: banner),
+          ),
+        ),
+      ]);
+    } else if (adController.enabled.value) {
+      children.addAll(<Widget>[
+        const SizedBox(height: 8),
+        OutlinedButton(
+          onPressed: adController.reloadBanner,
+          child: const Text('Retry ad load'),
+        ),
+      ]);
+    }
+
+    return _buildSectionCard(
+      icon: Icons.campaign_outlined,
+      title: 'Monetization',
+      children: children,
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -262,146 +536,11 @@ class _MyAppState extends State<MyApp> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: <Widget>[
-                Text(status.value, textAlign: TextAlign.center),
-                const SizedBox(height: 8),
-                Text(cloudStatus.value, textAlign: TextAlign.center),
-                const SizedBox(height: 8),
-                Text(authController.status.value, textAlign: TextAlign.center),
-                if (authController.session.value != null) ...<Widget>[
-                  const SizedBox(height: 8),
-                  Text(
-                    'Signed in as: ${authController.session.value!.displayName}',
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    'Session valid until: ${authController.session.value!.expiresAtUtc.toLocal()}',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 12),
-                  ),
-                  const SizedBox(height: 8),
-                  OutlinedButton(
-                    onPressed: () =>
-                        authController.signOut(reason: 'Signed out by user'),
-                    child: const Text('Sign out'),
-                  ),
-                ],
-                if (authController.sessionWarning.value != null) ...<Widget>[
-                  const SizedBox(height: 6),
-                  Text(
-                    authController.sessionWarning.value!,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 12),
-                  ),
-                ],
-                if (authController.options.isNotEmpty) ...<Widget>[
-                  const SizedBox(height: 8),
-                  Wrap(
-                    alignment: WrapAlignment.center,
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: authController.options
-                        .map(
-                          (option) => OutlinedButton(
-                            onPressed: option.enabled
-                                ? () => _startAuthFlow(option.provider)
-                                : null,
-                            child: Text(option.displayName),
-                          ),
-                        )
-                        .toList(growable: false),
-                  ),
-                ],
-                if (authController.session.value == null &&
-                    !authController.isSignInPending.value) ...<Widget>[
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Onboarding: 1) Ensure local server is reachable, '
-                    '2) press Google sign-in, 3) confirm in browser.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 12),
-                  ),
-                ],
-                if (authController.isSignInPending.value) ...<Widget>[
-                  const SizedBox(height: 8),
-                  const SizedBox(
-                    width: 220,
-                    child: LinearProgressIndicator(minHeight: 3),
-                  ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    alignment: WrapAlignment.center,
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: <Widget>[
-                      OutlinedButton(
-                        onPressed: _reopenPendingAuthUrl,
-                        child: const Text('Open auth URL again'),
-                      ),
-                      OutlinedButton(
-                        onPressed: _cancelPendingAuthFlow,
-                        child: const Text('Cancel sign-in'),
-                      ),
-                    ],
-                  ),
-                  if (authController.pendingSessionId.value != null) ...<Widget>[
-                    const SizedBox(height: 6),
-                    Text(
-                      'Pending session: ${authController.pendingSessionId.value}',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 11),
-                    ),
-                  ],
-                ],
-                if (authController.pollErrorCount.value > 0) ...<Widget>[
-                  const SizedBox(height: 6),
-                  Text(
-                    'Auth polling errors: ${authController.pollErrorCount.value}',
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 12),
-                  ),
-                ],
-                if (authFlowStatus.value.isNotEmpty) ...<Widget>[
-                  const SizedBox(height: 8),
-                  Text(
-                    authFlowStatus.value,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 12),
-                  ),
-                ],
-                const SizedBox(height: 8),
-                CheckboxListTile(
-                  value: diagnosticsUploadConsent.value,
-                  onChanged: (value) =>
-                      diagnosticsUploadConsent.value = value ?? false,
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  controlAffinity: ListTileControlAffinity.leading,
-                  title: const Text(
-                    'Share unknown device diagnostics (opt-in)',
-                    style: TextStyle(fontSize: 12),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(profileStatus.value, textAlign: TextAlign.center),
-                const SizedBox(height: 8),
-                Text(
-                  'Screen brightness: ${brightnessController.value.value ?? '-'}',
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Brightness source: ${brightnessController.providerLabel.value}',
-                  textAlign: TextAlign.center,
-                ),
-                if (diagnosticsStatus.value.isNotEmpty) ...<Widget>[
-                  const SizedBox(height: 12),
-                  Text(
-                    diagnosticsStatus.value,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(fontSize: 12),
-                  ),
-                ],
+                    _buildCloudSection(),
+                    _buildAuthSection(),
+                    _buildDeviceSection(),
+                    _buildDiagnosticsSection(),
+                    _buildAdSection(),
                   ],
                 ),
               ),

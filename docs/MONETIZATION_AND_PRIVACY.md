@@ -10,6 +10,7 @@
 - Default to non-personalized ads.
 - Keep ad load moderate to avoid retention loss.
 - Delay first ad until user reaches product value.
+- Runtime baseline is implemented with AdMob banner integration and platform-safe fallback on unsupported targets.
 
 ## Data policy
 

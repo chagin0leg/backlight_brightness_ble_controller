@@ -27,6 +27,8 @@ This document is a plain status snapshot of what is already implemented versus w
 - Device auth polling loop is implemented in client auth controller.
 - Client now supports browser launch, pending-session control, and polling retry guardrails.
 - Session persistence, restoration after restart, and expiry-based re-auth prompts are implemented.
+- Main app screen now uses grouped sections (cloud/auth/device/diagnostics/ads) with clearer onboarding actions.
+- Basic AdMob banner runtime integration is implemented with platform-safe fallback.
 
 ## Self-hosted backend templates
 
@@ -56,8 +58,8 @@ This document is a plain status snapshot of what is already implemented versus w
 
 - Cross-platform brightness providers are mostly stubs outside Windows.
 - Google OAuth E2E is implemented, but multi-provider production hardening is still pending.
-- UI is still minimal status-driven; no polished product UX yet.
-- No finalized ad SDK integration yet.
+- Product-level visual polish and deeper settings/navigation UX are still pending.
+- Ads integration exists, but monetization tuning (placement strategy, frequency, consent UX) is pending.
 - No full settings UX with durable preferences beyond auth session yet.
 - No mature reconnect orchestration and fallback strategy yet.
 - No automated tests/CI coverage for new flows yet.

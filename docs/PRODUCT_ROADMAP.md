@@ -139,8 +139,8 @@ This document captures the agreed scope for turning the project into a productio
 
 ## Phase 6: Monetization and privacy
 
-- [ ] Add ad stack integration (start with one network).
-- [ ] Keep non-personalized ads as default mode.
+- [x] Add ad stack integration (start with one network).
+- [x] Keep non-personalized ads as default mode.
 - [ ] Add consent UI for regions that require it.
 - [ ] Define anonymous analytics schema.
 - [ ] Add strict no-PII policy checks in telemetry pipeline.
