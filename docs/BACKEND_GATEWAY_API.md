@@ -27,6 +27,7 @@ Returns setup checklist, runtime status, and auth/diagnostics metrics.
 When quick tunnel is enabled, response also includes:
 - current temporary public URL (`public_base_url`)
 - expected Google redirect hint (`google_redirect_hint`)
+- redirect auto-follow flag (`google_auto_redirect_from_public_url`)
 
 ## `POST /ui/api/config/google`
 
@@ -170,6 +171,7 @@ Client profile-registry config supports:
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
 - `GOOGLE_REDIRECT_URI`
+- `GOOGLE_AUTO_REDIRECT_FROM_PUBLIC_URL` (default `true`)
 - `GOOGLE_SCOPE` (default `openid email profile`)
 - `GOOGLE_PROMPT` (default `consent`)
 - `GOOGLE_ALLOWED_DOMAIN` (optional)

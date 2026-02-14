@@ -132,6 +132,10 @@ def _default_runtime_config() -> dict[str, object]:
         "google_client_id": google_client_id,
         "google_client_secret": google_client_secret,
         "google_redirect_uri": google_redirect_uri,
+        "google_auto_redirect_from_public_url": _parse_bool(
+            os.getenv("GOOGLE_AUTO_REDIRECT_FROM_PUBLIC_URL", "1"),
+            True,
+        ),
         "google_scope": os.getenv("GOOGLE_SCOPE", "openid email profile").strip()
         or "openid email profile",
         "google_prompt": os.getenv("GOOGLE_PROMPT", "consent").strip() or "consent",
@@ -170,6 +174,7 @@ def _update_runtime_config(patch: dict[str, object]) -> dict[str, object]:
         "google_client_id",
         "google_client_secret",
         "google_redirect_uri",
+        "google_auto_redirect_from_public_url",
         "google_scope",
         "google_prompt",
         "google_allowed_domain",
@@ -194,7 +199,11 @@ def _update_runtime_config(patch: dict[str, object]) -> dict[str, object]:
                 text = text.strip("-") or LOCAL_DASHBOARD_NAME
             sanitized_patch[key] = text
             continue
-        if key in {"google_enabled", "google_require_verified_email"}:
+        if key in {
+            "google_enabled",
+            "google_require_verified_email",
+            "google_auto_redirect_from_public_url",
+        }:
             sanitized_patch[key] = _parse_bool(value, False)
 
     with _runtime_config_lock:
@@ -218,7 +227,8 @@ def _update_runtime_config(patch: dict[str, object]) -> dict[str, object]:
 
 
 def _get_runtime_config() -> dict[str, object]:
-    return _load_runtime_config()
+    loaded = _load_runtime_config()
+    return _maybe_sync_google_redirect_with_public_url(loaded)
 
 
 def hash_subject(provider: str, raw_subject: str) -> str:
@@ -329,6 +339,10 @@ def _google_settings() -> dict[str, object]:
         "client_id": str(cfg.get("google_client_id", "")).strip(),
         "client_secret": str(cfg.get("google_client_secret", "")).strip(),
         "redirect_uri": str(cfg.get("google_redirect_uri", "")).strip(),
+        "auto_redirect_from_public_url": _parse_bool(
+            cfg.get("google_auto_redirect_from_public_url", True),
+            True,
+        ),
         "scope": str(cfg.get("google_scope", "openid email profile")).strip()
         or "openid email profile",
         "prompt": str(cfg.get("google_prompt", "consent")).strip() or "consent",
@@ -373,6 +387,46 @@ def _quick_tunnel_public_base_url() -> str:
 
 def _normalize_redirect_uri(raw: str) -> str:
     return raw.strip().rstrip("/")
+
+
+def _google_redirect_hint_from_public_url(public_base_url: str) -> str:
+    base = public_base_url.strip().rstrip("/")
+    if not base:
+        return ""
+    return f"{base}/auth/google/callback"
+
+
+def _maybe_sync_google_redirect_with_public_url(
+    config: dict[str, object],
+) -> dict[str, object]:
+    auto_sync = _parse_bool(
+        config.get("google_auto_redirect_from_public_url", True),
+        True,
+    )
+    if not auto_sync:
+        return dict(config)
+
+    public_base_url = _quick_tunnel_public_base_url()
+    redirect_hint = _google_redirect_hint_from_public_url(public_base_url)
+    if not redirect_hint:
+        return dict(config)
+
+    current_redirect = str(config.get("google_redirect_uri", "")).strip()
+    if _normalize_redirect_uri(current_redirect) == _normalize_redirect_uri(redirect_hint):
+        return dict(config)
+
+    with _runtime_config_lock:
+        global _runtime_config_cache
+        current = dict(_runtime_config_cache or config)
+        if not _parse_bool(
+            current.get("google_auto_redirect_from_public_url", True),
+            True,
+        ):
+            return dict(current)
+        current["google_redirect_uri"] = redirect_hint
+        write_json(RUNTIME_CONFIG_PATH, current)
+        _runtime_config_cache = dict(current)
+        return dict(current)
 
 
 def _build_google_start_url(*, state: str) -> str:
@@ -638,10 +692,9 @@ def _dashboard_status_payload() -> dict[str, object]:
     uptime_sec = int(time.time()) - STARTED_AT_UNIX
     local_name = str(runtime.get("dashboard_local_name", LOCAL_DASHBOARD_NAME)).strip() or LOCAL_DASHBOARD_NAME
     public_base_url = _quick_tunnel_public_base_url()
-    google_redirect_hint = (
-        f"{public_base_url}/auth/google/callback" if public_base_url else ""
-    )
+    google_redirect_hint = _google_redirect_hint_from_public_url(public_base_url)
     current_google_redirect = str(google["redirect_uri"]).strip()
+    auto_redirect_enabled = bool(google["auto_redirect_from_public_url"])
     google_redirect_matches_hint = bool(
         google_redirect_hint
         and _normalize_redirect_uri(current_google_redirect)
@@ -692,6 +745,16 @@ def _dashboard_status_payload() -> dict[str, object]:
             "details": "Enable Google flow after filling all credentials",
         },
         {
+            "id": "google-auto-redirect",
+            "title": "Google redirect follows current public URL automatically",
+            "done": auto_redirect_enabled,
+            "details": (
+                "Enabled: gateway updates redirect URI when trycloudflare URL changes"
+                if auto_redirect_enabled
+                else "Disabled: update Google Redirect URI manually in dashboard when URL changes"
+            ),
+        },
+        {
             "id": "quick-tunnel",
             "title": "Temporary public URL is active",
             "done": bool(public_base_url),
@@ -723,6 +786,7 @@ def _dashboard_status_payload() -> dict[str, object]:
             "public_base_url": public_base_url,
             "google_redirect_hint": google_redirect_hint,
             "google_redirect_matches_hint": google_redirect_matches_hint,
+            "google_auto_redirect_from_public_url": auto_redirect_enabled,
         },
         "setup_steps": steps,
         "runtime_config": {
@@ -738,6 +802,7 @@ def _dashboard_status_payload() -> dict[str, object]:
             "public_base_url": public_base_url,
             "google_redirect_hint": google_redirect_hint,
             "google_redirect_matches_hint": google_redirect_matches_hint,
+            "google_auto_redirect_from_public_url": auto_redirect_enabled,
         },
         "actions": [
             "Open /ui to complete setup actions in browser",
@@ -835,6 +900,10 @@ def _render_dashboard_html() -> str:
           <label>Google enabled (true/false)</label>
           <input id="googleEnabled" type="text" />
         </div>
+        <div>
+          <label>Auto-update Redirect URI from current public URL (true/false)</label>
+          <input id="googleAutoRedirect" type="text" />
+        </div>
       </div>
       <div style="margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
         <button id="saveBtn" type="button">Save config</button>
@@ -910,6 +979,7 @@ def _render_dashboard_html() -> str:
       document.getElementById('googlePrompt').value = cfg.google_prompt || '';
       document.getElementById('googleAllowedDomain').value = cfg.google_allowed_domain || '';
       document.getElementById('googleEnabled').value = String(cfg.google_enabled || false);
+      document.getElementById('googleAutoRedirect').value = String(cfg.google_auto_redirect_from_public_url !== false);
       document.getElementById('googleStartLink').href = '/auth/google/start';
 
       const hintEl = document.getElementById('publicUrlHint');
@@ -982,6 +1052,7 @@ def _render_dashboard_html() -> str:
         google_prompt: document.getElementById('googlePrompt').value,
         google_allowed_domain: document.getElementById('googleAllowedDomain').value,
         google_enabled: (document.getElementById('googleEnabled').value || '').toLowerCase() === 'true',
+        google_auto_redirect_from_public_url: (document.getElementById('googleAutoRedirect').value || '').toLowerCase() === 'true',
       };
       const r = await fetch('/ui/api/config/google', {
         method: 'POST',
@@ -1386,11 +1457,16 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            updated = _update_runtime_config(payload)
-            local_name = str(updated.get("dashboard_local_name", LOCAL_DASHBOARD_NAME))
+            _update_runtime_config(payload)
+            effective = _get_runtime_config()
+            local_name = str(effective.get("dashboard_local_name", LOCAL_DASHBOARD_NAME))
             public_base_url = _quick_tunnel_public_base_url()
-            google_redirect_hint = (
-                f"{public_base_url}/auth/google/callback" if public_base_url else ""
+            google_redirect_hint = _google_redirect_hint_from_public_url(public_base_url)
+            current_redirect_uri = str(effective.get("google_redirect_uri", "")).strip()
+            google_redirect_matches_hint = bool(
+                google_redirect_hint
+                and _normalize_redirect_uri(current_redirect_uri)
+                == _normalize_redirect_uri(google_redirect_hint)
             )
             message = (
                 f"Configuration saved. Dashboard host is http://{local_name}.local "
@@ -1403,17 +1479,22 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     "message": message,
                     "runtime_config": {
                         "dashboard_local_name": local_name,
-                        "google_enabled": _parse_bool(updated.get("google_enabled", False), False),
-                        "google_client_id": str(updated.get("google_client_id", "")),
-                        "google_redirect_uri": str(updated.get("google_redirect_uri", "")),
-                        "google_scope": str(updated.get("google_scope", "")),
-                        "google_prompt": str(updated.get("google_prompt", "")),
-                        "google_allowed_domain": str(updated.get("google_allowed_domain", "")),
+                        "google_enabled": _parse_bool(effective.get("google_enabled", False), False),
+                        "google_client_id": str(effective.get("google_client_id", "")),
+                        "google_redirect_uri": current_redirect_uri,
+                        "google_scope": str(effective.get("google_scope", "")),
+                        "google_prompt": str(effective.get("google_prompt", "")),
+                        "google_allowed_domain": str(effective.get("google_allowed_domain", "")),
+                        "google_auto_redirect_from_public_url": _parse_bool(
+                            effective.get("google_auto_redirect_from_public_url", True),
+                            True,
+                        ),
                         "google_client_secret_configured": bool(
-                            str(updated.get("google_client_secret", "")).strip()
+                            str(effective.get("google_client_secret", "")).strip()
                         ),
                         "public_base_url": public_base_url,
                         "google_redirect_hint": google_redirect_hint,
+                        "google_redirect_matches_hint": google_redirect_matches_hint,
                     },
                 },
             )

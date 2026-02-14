@@ -164,6 +164,7 @@ sudo systemctl enable --now backlight-cloudflared.service
 5. Fill Google Client ID/Secret/Redirect in dashboard and Save.
 
 If server restarts and temporary URL changes, dashboard highlights new redirect hint.
+When auto-follow is enabled (default), gateway updates local redirect URI field automatically to current hint.
 
 ## 10. HIL stand support on same Arch node
 
