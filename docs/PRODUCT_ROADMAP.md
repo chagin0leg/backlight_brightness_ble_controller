@@ -16,6 +16,9 @@ This document captures the agreed scope for turning the project into a productio
 - Make new device support distributable to all users without app reinstallation.
 - Avoid dedicated servers; rely on free-tier managed/serverless infrastructure.
 - Support broad sign-in options (Google, Microsoft, Yandex, Telegram, others where feasible).
+- Support low-power self-hosted deployment (Arch Linux, no dedicated IP).
+- Monetize via ads with privacy-safe defaults (non-personalized first).
+- Collect only anonymous analytics and diagnostics.
 
 ## Phase 0: Foundation (current iteration)
 
@@ -69,15 +72,31 @@ This document captures the agreed scope for turning the project into a productio
 
 ## Phase 3.5: Authentication and free cloud setup
 
-- [ ] Add cloud configuration model for no-dedicated-server deployments.
-- [ ] Add authentication provider abstraction and UI hooks.
+- [x] Add cloud configuration model for no-dedicated-server deployments.
+- [x] Add authentication provider abstraction and UI hooks.
 - [ ] Wire provider entries for:
-  - [ ] Google
-  - [ ] Microsoft
-  - [ ] Yandex
-  - [ ] Telegram
-- [ ] Add serverless diagnostics upload path (Cloudflare/Supabase/Firebase webhook).
-- [ ] Add profile registry remote manifest update flow.
+  - [x] Google
+  - [x] Microsoft
+  - [x] Yandex
+  - [x] Telegram
+  - [x] GitHub
+  - [x] Apple
+  - [x] VK
+  - [x] Discord
+  - [x] Email magic link
+  - [x] Phone OTP
+  - [x] Passkey/WebAuthn
+  - [x] Anonymous guest
+- [x] Add serverless diagnostics upload path (Cloudflare/Supabase/Firebase webhook).
+- [x] Add profile registry remote manifest update flow.
+
+## Phase 3.6: Arch Linux lightweight server mode
+
+- [ ] Add deployment template for Arch Linux (2c/16GB baseline).
+- [ ] Configure tunnel-first ingress (Cloudflare Tunnel preferred).
+- [ ] Expose stable OAuth callback URL behind tunnel hostname.
+- [ ] Add health checks and watchdog restart policy.
+- [ ] Keep server role minimal: auth callback, diagnostics ingest, manifest proxy.
 
 ## Phase 4: Cross-platform implementation matrix
 
@@ -110,6 +129,14 @@ This document captures the agreed scope for turning the project into a productio
   - [ ] platform build smoke checks
 - [ ] Installer/release pipeline and changelog.
 - [ ] In-app profile update mechanism with signatures.
+
+## Phase 6: Monetization and privacy
+
+- [ ] Add ad stack integration (start with one network).
+- [ ] Keep non-personalized ads as default mode.
+- [ ] Add consent UI for regions that require it.
+- [ ] Define anonymous analytics schema.
+- [ ] Add strict no-PII policy checks in telemetry pipeline.
 
 ## Notes on automation
 

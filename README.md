@@ -8,6 +8,8 @@ The current product roadmap and implementation checklist are tracked in:
 
 - `docs/PRODUCT_ROADMAP.md`
 - `docs/FREE_INFRA_AND_AUTH.md`
+- `docs/ARCH_SERVER_RUNBOOK.md`
+- `docs/MONETIZATION_AND_PRIVACY.md`
 
 ## Application Icon
 

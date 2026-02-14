@@ -30,6 +30,62 @@
         "display_name": "Telegram",
         "oauth_start_url": "",
         "notes": "Requires serverless signature/hash verification"
+      },
+      {
+        "provider": "github",
+        "enabled": true,
+        "display_name": "GitHub",
+        "oauth_start_url": "",
+        "notes": "Good conversion for developer audience"
+      },
+      {
+        "provider": "apple",
+        "enabled": false,
+        "display_name": "Apple",
+        "oauth_start_url": "",
+        "notes": "Enable for iOS-focused rollout"
+      },
+      {
+        "provider": "vk",
+        "enabled": false,
+        "display_name": "VK",
+        "oauth_start_url": "",
+        "notes": "Regional provider option"
+      },
+      {
+        "provider": "discord",
+        "enabled": false,
+        "display_name": "Discord",
+        "oauth_start_url": "",
+        "notes": "Gaming/tech audience option"
+      },
+      {
+        "provider": "email_magic_link",
+        "enabled": false,
+        "display_name": "Email magic link",
+        "oauth_start_url": "",
+        "notes": "Low-friction passwordless option"
+      },
+      {
+        "provider": "phone_otp",
+        "enabled": false,
+        "display_name": "Phone OTP",
+        "oauth_start_url": "",
+        "notes": "Enable only if OTP economics and legal requirements fit"
+      },
+      {
+        "provider": "passkey",
+        "enabled": false,
+        "display_name": "Passkey",
+        "oauth_start_url": "",
+        "notes": "Use with WebAuthn-capable backend"
+      },
+      {
+        "provider": "anonymous_guest",
+        "enabled": true,
+        "display_name": "Guest mode",
+        "oauth_start_url": "",
+        "notes": "Best top-of-funnel conversion, no personal data"
       }
     ]
   },
@@ -44,5 +100,21 @@
   "profile_registry": {
     "remote_manifest_url": "",
     "refresh_minutes": 120
+  },
+  "ads": {
+    "enabled": false,
+    "provider": "admob",
+    "non_personalized_only": true,
+    "banner_unit_id": "",
+    "interstitial_unit_id": "",
+    "rewarded_unit_id": "",
+    "min_interval_seconds": 90
+  },
+  "anonymous_analytics": {
+    "enabled": true,
+    "collect_usage_events": true,
+    "collect_crash_signals": true,
+    "sample_rate_percent": 25,
+    "endpoint_url": ""
   }
 }

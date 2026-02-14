@@ -101,6 +101,18 @@ class AuthController extends GetxController {
       );
     }
 
+    if (option.provider == AuthProviderType.anonymousGuest) {
+      completeSignIn(
+        provider: AuthProviderType.anonymousGuest,
+        userId: 'guest-${DateTime.now().millisecondsSinceEpoch}',
+        displayName: 'Guest',
+      );
+      return const AuthActionResult(
+        ok: true,
+        message: 'Guest session has been started',
+      );
+    }
+
     if (option.oauthStartUrl == null || option.oauthStartUrl!.isEmpty) {
       return AuthActionResult(
         ok: false,
