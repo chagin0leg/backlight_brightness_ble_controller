@@ -9,9 +9,11 @@ import 'package:backlight_brightness_ble_controller/cloud/unknown_device_report_
 import 'package:backlight_brightness_ble_controller/device_profile.dart';
 import 'package:backlight_brightness_ble_controller/device_profile_registry.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:backlight_brightness_ble_controller/brightness.dart';
 import 'package:get/get.dart';
 import 'package:backlight_brightness_ble_controller/unknown_device_diagnostics.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:win_ble/win_ble.dart';
 import 'package:win_ble/win_file.dart';
 
@@ -111,14 +113,90 @@ class _MyAppState extends State<MyApp> {
   }
 
   Future<void> _startAuthFlow(AuthProviderType provider) async {
+    authFlowStatus.value = 'Starting sign-in...';
     final result = await authController.beginSignIn(provider);
     final authUrl = result.externalAuthUrl ??
         authController.pendingExternalAuthUrl.value;
-    authFlowStatus.value = result.ok
-        ? authUrl == null || authUrl.isEmpty
-            ? result.message
-            : '${result.message}. URL: $authUrl'
-        : result.message;
+    if (!result.ok) {
+      authFlowStatus.value = result.message;
+      return;
+    }
+
+    if (authUrl == null || authUrl.isEmpty) {
+      authFlowStatus.value = result.message;
+      return;
+    }
+
+    final launched = await _openExternalAuthUrl(authUrl);
+    authFlowStatus.value = launched
+        ? '${result.message}. Browser has been opened.'
+        : '${result.message}. Failed to open browser automatically, URL copied.';
+  }
+
+  Uri? _normalizeExternalAuthUri(String rawUrl) {
+    final trimmed = rawUrl.trim();
+    if (trimmed.isEmpty) {
+      return null;
+    }
+
+    final parsed = Uri.tryParse(trimmed);
+    if (parsed == null) {
+      return null;
+    }
+    if (parsed.hasScheme) {
+      return parsed;
+    }
+    if (trimmed.startsWith('/')) {
+      final base = appCloudConfig.auth.deviceStartUrl;
+      final baseUri = base == null ? null : Uri.tryParse(base);
+      if (baseUri != null) {
+        return baseUri.resolveUri(parsed);
+      }
+    }
+    if (trimmed.startsWith('//')) {
+      return Uri.tryParse('https:$trimmed');
+    }
+    return Uri.tryParse('https://$trimmed');
+  }
+
+  Future<bool> _openExternalAuthUrl(String rawUrl) async {
+    final uri = _normalizeExternalAuthUri(rawUrl);
+    if (uri == null) {
+      await Clipboard.setData(ClipboardData(text: rawUrl));
+      return false;
+    }
+
+    try {
+      final launched = await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
+      if (launched) {
+        return true;
+      }
+    } catch (_) {
+      // Ignore and fallback to clipboard.
+    }
+
+    await Clipboard.setData(ClipboardData(text: uri.toString()));
+    return false;
+  }
+
+  Future<void> _reopenPendingAuthUrl() async {
+    final url = authController.pendingExternalAuthUrl.value;
+    if (url == null || url.isEmpty) {
+      authFlowStatus.value = 'No active auth URL to reopen.';
+      return;
+    }
+    final launched = await _openExternalAuthUrl(url);
+    authFlowStatus.value = launched
+        ? 'Auth URL reopened in browser.'
+        : 'Could not reopen browser. URL copied to clipboard.';
+  }
+
+  void _cancelPendingAuthFlow() {
+    authController.cancelPendingSignIn();
+    authFlowStatus.value = 'Pending sign-in was cancelled.';
   }
 
   @override
@@ -186,6 +264,13 @@ class _MyAppState extends State<MyApp> {
                 Text(cloudStatus.value, textAlign: TextAlign.center),
                 const SizedBox(height: 8),
                 Text(authController.status.value, textAlign: TextAlign.center),
+                if (authController.session.value != null) ...<Widget>[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Signed in as: ${authController.session.value!.displayName}',
+                    textAlign: TextAlign.center,
+                  ),
+                ],
                 if (authController.options.isNotEmpty) ...<Widget>[
                   const SizedBox(height: 8),
                   Wrap(
@@ -202,6 +287,32 @@ class _MyAppState extends State<MyApp> {
                           ),
                         )
                         .toList(growable: false),
+                  ),
+                ],
+                if (authController.isSignInPending.value) ...<Widget>[
+                  const SizedBox(height: 8),
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: <Widget>[
+                      OutlinedButton(
+                        onPressed: _reopenPendingAuthUrl,
+                        child: const Text('Open auth URL again'),
+                      ),
+                      OutlinedButton(
+                        onPressed: _cancelPendingAuthFlow,
+                        child: const Text('Cancel sign-in'),
+                      ),
+                    ],
+                  ),
+                ],
+                if (authController.pollErrorCount.value > 0) ...<Widget>[
+                  const SizedBox(height: 6),
+                  Text(
+                    'Auth polling errors: ${authController.pollErrorCount.value}',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 12),
                   ),
                 ],
                 if (authFlowStatus.value.isNotEmpty) ...<Widget>[

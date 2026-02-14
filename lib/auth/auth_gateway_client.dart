@@ -50,8 +50,8 @@ class AuthGatewayClient {
     required String provider,
     String? externalAuthUrl,
   }) async {
-    final uri = Uri.tryParse(deviceStartUrl);
-    if (uri == null) {
+    final requestUri = _normalizeHttpUri(deviceStartUrl);
+    if (requestUri == null) {
       return const DeviceAuthStartResult(
         ok: false,
         message: 'Invalid auth device-start URL',
@@ -60,7 +60,7 @@ class AuthGatewayClient {
 
     final client = HttpClient();
     try {
-      final request = await client.postUrl(uri).timeout(timeout);
+      final request = await client.postUrl(requestUri).timeout(timeout);
       request.headers.set(HttpHeaders.contentTypeHeader, 'application/json');
       request.write(
         jsonEncode(
@@ -92,7 +92,10 @@ class AuthGatewayClient {
         message: decoded['message']?.toString() ??
             'Device auth session has been started',
         sessionId: decoded['session_id']?.toString(),
-        authUrl: decoded['auth_url']?.toString(),
+        authUrl: _resolveAuthUrl(
+          decoded['auth_url']?.toString(),
+          requestUri: requestUri,
+        ),
         expiresInSec: _asInt(decoded['expires_in_sec']),
       );
     } on SocketException catch (error) {
@@ -113,7 +116,7 @@ class AuthGatewayClient {
   Future<DeviceAuthStatusResult> getDeviceSessionStatus({
     required String sessionId,
   }) async {
-    final baseUri = Uri.tryParse(deviceStatusUrl);
+    final baseUri = _normalizeHttpUri(deviceStatusUrl);
     if (baseUri == null) {
       return const DeviceAuthStatusResult(
         ok: false,
@@ -203,4 +206,54 @@ int? _asInt(dynamic rawValue) {
     return int.tryParse(rawValue);
   }
   return null;
+}
+
+Uri? _normalizeHttpUri(String rawUrl) {
+  final trimmed = rawUrl.trim();
+  if (trimmed.isEmpty) {
+    return null;
+  }
+
+  final direct = Uri.tryParse(trimmed);
+  if (direct != null && direct.hasScheme) {
+    return direct;
+  }
+
+  if (trimmed.startsWith('//')) {
+    return Uri.tryParse('https:$trimmed');
+  }
+
+  if (direct != null && !direct.hasScheme) {
+    return Uri.tryParse('https://$trimmed');
+  }
+
+  return null;
+}
+
+String? _resolveAuthUrl(
+  String? rawAuthUrl, {
+  required Uri requestUri,
+}) {
+  if (rawAuthUrl == null) {
+    return null;
+  }
+  final trimmed = rawAuthUrl.trim();
+  if (trimmed.isEmpty) {
+    return null;
+  }
+
+  final parsed = Uri.tryParse(trimmed);
+  if (parsed != null && parsed.hasScheme) {
+    return parsed.toString();
+  }
+
+  if (trimmed.startsWith('/')) {
+    return requestUri.resolve(trimmed).toString();
+  }
+
+  if (parsed != null) {
+    return requestUri.resolveUri(parsed).toString();
+  }
+
+  return requestUri.resolve(trimmed).toString();
 }

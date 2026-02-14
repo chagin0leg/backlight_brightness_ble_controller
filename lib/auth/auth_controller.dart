@@ -53,6 +53,8 @@ class AuthController extends GetxController {
   final RxList<AuthProviderOption> options = <AuthProviderOption>[].obs;
   final Rxn<AuthSession> session = Rxn<AuthSession>();
   final RxString status = 'Authorization is not configured'.obs;
+  final RxBool isSignInPending = false.obs;
+  final RxInt pollErrorCount = 0.obs;
   final RxnString pendingSessionId = RxnString();
   final RxnString pendingExternalAuthUrl = RxnString();
 
@@ -62,6 +64,7 @@ class AuthController extends GetxController {
   int _pollIntervalSeconds = 3;
   int _sessionTimeoutSeconds = 240;
   AuthProviderType? _pendingProvider;
+  bool _pollInFlight = false;
 
   void configure(AppCloudConfig config) {
     isEnabled.value = config.auth.enabled;
@@ -151,11 +154,19 @@ class AuthController extends GetxController {
           message: startResult.message,
         );
       }
+      if (startResult.authUrl == null || startResult.authUrl!.isEmpty) {
+        return const AuthActionResult(
+          ok: false,
+          message: 'Auth session started, but auth URL is missing',
+        );
+      }
 
       pendingSessionId.value = startResult.sessionId;
       pendingExternalAuthUrl.value = startResult.authUrl;
       _sessionStartedAtUtc = DateTime.now().toUtc();
       _pendingProvider = option.provider;
+      isSignInPending.value = true;
+      pollErrorCount.value = 0;
 
       status.value =
           'Device auth started for ${option.displayName}. Open URL and complete sign-in.';
@@ -190,66 +201,85 @@ class AuthController extends GetxController {
   }
 
   Future<void> _pollAuthSession() async {
+    if (_pollInFlight) {
+      return;
+    }
+
     final sessionId = pendingSessionId.value;
     final gatewayClient = _gatewayClient;
     if (sessionId == null || sessionId.isEmpty || gatewayClient == null) {
       return;
     }
 
+    _pollInFlight = true;
     final startedAt = _sessionStartedAtUtc;
-    if (startedAt != null &&
-        DateTime.now().toUtc().difference(startedAt).inSeconds >
-            _sessionTimeoutSeconds) {
-      status.value = 'Auth session timeout. Please try sign-in again.';
-      _stopPolling();
-      return;
-    }
+    try {
+      if (startedAt != null &&
+          DateTime.now().toUtc().difference(startedAt).inSeconds >
+              _sessionTimeoutSeconds) {
+        status.value = 'Auth session timeout. Please try sign-in again.';
+        _stopPolling();
+        return;
+      }
 
-    final result = await gatewayClient.getDeviceSessionStatus(
-      sessionId: sessionId,
-    );
-    if (!result.ok && result.status == 'error') {
-      status.value = result.message;
-      return;
-    }
-
-    final normalizedStatus = result.status.trim().toLowerCase();
-    if (normalizedStatus == 'pending') {
-      status.value = 'Sign-in pending. Finish auth in browser.';
-      return;
-    }
-
-    if (normalizedStatus == 'completed') {
-      final provider = result.provider == null
-          ? (_pendingProvider ?? AuthProviderType.unknown)
-          : authProviderTypeFromString(result.provider!);
-      final subject = (result.subject == null || result.subject!.isEmpty)
-          ? 'subject-${DateTime.now().millisecondsSinceEpoch}'
-          : result.subject!;
-      completeSignIn(
-        provider: provider,
-        userId: subject,
-        displayName: authProviderDisplayName(provider),
+      final result = await gatewayClient.getDeviceSessionStatus(
+        sessionId: sessionId,
       );
-      _stopPolling();
-      return;
-    }
+      if (!result.ok && result.status == 'error') {
+        pollErrorCount.value += 1;
+        status.value = result.message;
+        if (pollErrorCount.value >= 5) {
+          status.value =
+              'Sign-in failed due to repeated network errors. Please retry.';
+          _stopPolling();
+        }
+        return;
+      }
 
-    if (normalizedStatus == 'failed' || normalizedStatus == 'expired') {
-      status.value = result.error == null || result.error!.isEmpty
-          ? 'Sign-in failed ($normalizedStatus)'
-          : 'Sign-in failed: ${result.error}';
-      _stopPolling();
+      pollErrorCount.value = 0;
+      final normalizedStatus = result.status.trim().toLowerCase();
+      if (normalizedStatus == 'pending') {
+        status.value = 'Sign-in pending. Finish auth in browser.';
+        return;
+      }
+
+      if (normalizedStatus == 'completed') {
+        final provider = result.provider == null
+            ? (_pendingProvider ?? AuthProviderType.unknown)
+            : authProviderTypeFromString(result.provider!);
+        final subject = (result.subject == null || result.subject!.isEmpty)
+            ? 'subject-${DateTime.now().millisecondsSinceEpoch}'
+            : result.subject!;
+        completeSignIn(
+          provider: provider,
+          userId: subject,
+          displayName: authProviderDisplayName(provider),
+        );
+        _stopPolling();
+        return;
+      }
+
+      if (normalizedStatus == 'failed' || normalizedStatus == 'expired') {
+        status.value = result.error == null || result.error!.isEmpty
+            ? 'Sign-in failed ($normalizedStatus)'
+            : 'Sign-in failed: ${result.error}';
+        _stopPolling();
+      }
+    } finally {
+      _pollInFlight = false;
     }
   }
 
   void _stopPolling() {
     _authPollTimer?.cancel();
     _authPollTimer = null;
+    isSignInPending.value = false;
+    pollErrorCount.value = 0;
     pendingSessionId.value = null;
     pendingExternalAuthUrl.value = null;
     _sessionStartedAtUtc = null;
     _pendingProvider = null;
+    _pollInFlight = false;
   }
 
   void completeSignIn({
@@ -270,6 +300,14 @@ class AuthController extends GetxController {
     _stopPolling();
     session.value = null;
     status.value = 'Signed out';
+  }
+
+  void cancelPendingSignIn() {
+    if (!isSignInPending.value) {
+      return;
+    }
+    _stopPolling();
+    status.value = 'Sign-in cancelled by user';
   }
 
   @override
