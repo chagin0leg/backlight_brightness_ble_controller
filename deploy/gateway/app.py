@@ -8,6 +8,7 @@ Features:
 - Google OAuth callback/token exchange
 - Telegram payload verification
 - Anonymous diagnostics ingest with PII key redaction
+- Anonymous analytics ingest and dashboard KPI aggregation
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ AUTH_DEVICE_SESSION_TTL_SEC = int(os.getenv("AUTH_DEVICE_SESSION_TTL_SEC", "300"
 LOCAL_DASHBOARD_NAME = os.getenv("LOCAL_DASHBOARD_NAME", "backlight").strip() or "backlight"
 
 DIAGNOSTICS_DIR = DATA_DIR / "diagnostics"
+ANALYTICS_DIR = DATA_DIR / "analytics"
 PROFILE_DIR = DATA_DIR / "profiles"
 PROFILE_MANIFEST_PATH = PROFILE_DIR / "manifest.json"
 RUNTIME_CONFIG_PATH = DATA_DIR / "runtime_config.json"
@@ -52,6 +54,13 @@ RUNTIME_SHARED_DIR = pathlib.Path(os.getenv("RUNTIME_SHARED_DIR", "/runtime"))
 QUICK_TUNNEL_LOG_PATH = pathlib.Path(
     os.getenv("QUICK_TUNNEL_LOG_PATH", str(RUNTIME_SHARED_DIR / "cloudflared.log"))
 )
+ANALYTICS_API_KEY = os.getenv("ANALYTICS_INGEST_API_KEY", "").strip()
+ANALYTICS_MAX_EVENTS_PER_REQUEST = int(
+    os.getenv("ANALYTICS_MAX_EVENTS_PER_REQUEST", "250")
+)
+METRICS_WINDOW_HOURS = int(os.getenv("METRICS_WINDOW_HOURS", "24"))
+METRICS_CACHE_TTL_SEC = int(os.getenv("METRICS_CACHE_TTL_SEC", "10"))
+METRICS_MAX_FILES_SCANNED = int(os.getenv("METRICS_MAX_FILES_SCANNED", "5000"))
 
 _ticket_store_lock = threading.Lock()
 _auth_ticket_store: dict[str, dict[str, object]] = {}
@@ -62,6 +71,9 @@ _runtime_config_cache: dict[str, object] | None = None
 _telegram_updates_lock = threading.Lock()
 _telegram_update_offset = 0
 _telegram_last_poll_unix = 0
+_metrics_cache_lock = threading.Lock()
+_metrics_cache_payload: dict[str, object] | None = None
+_metrics_cache_expires_unix = 0
 
 PII_KEYS = {
     "email",
@@ -90,6 +102,7 @@ TRYCLOUDFLARE_URL_RE = re.compile(
     re.IGNORECASE,
 )
 TELEGRAM_LOGIN_CODE_RE = re.compile(r"^[A-Z0-9]{6,32}$")
+ANALYTICS_EVENT_NAME_RE = re.compile(r"[^a-z0-9._-]+")
 
 
 def utc_now_iso() -> str:
@@ -134,6 +147,7 @@ def _normalize_public_base_url(raw_value: object) -> str:
 
 def ensure_directories() -> None:
     DIAGNOSTICS_DIR.mkdir(parents=True, exist_ok=True)
+    ANALYTICS_DIR.mkdir(parents=True, exist_ok=True)
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -351,6 +365,109 @@ def parse_json_body(handler: BaseHTTPRequestHandler):
         return json.loads(payload_raw)
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid JSON body: {exc}") from exc
+
+
+def _invalidate_metrics_cache() -> None:
+    global _metrics_cache_payload
+    global _metrics_cache_expires_unix
+    with _metrics_cache_lock:
+        _metrics_cache_payload = None
+        _metrics_cache_expires_unix = 0
+
+
+def _sanitize_metric_key(raw_key: object) -> str:
+    normalized = str(raw_key).strip().lower()
+    if not normalized:
+        return ""
+    result_chars = []
+    for ch in normalized:
+        if ch.isalnum() or ch in {"_", "-", "."}:
+            result_chars.append(ch)
+        else:
+            result_chars.append("_")
+    return "".join(result_chars).strip("_-.")[:64]
+
+
+def _sanitize_analytics_event_name(raw_name: object) -> str:
+    normalized = str(raw_name).strip().lower()
+    if not normalized:
+        return ""
+    compact = ANALYTICS_EVENT_NAME_RE.sub("_", normalized).strip("_-.")
+    return compact[:120]
+
+
+def _parse_timestamp_unix(raw_value: object, fallback_unix: int | None = None) -> int:
+    fallback = fallback_unix if fallback_unix is not None else int(time.time())
+    try:
+        if isinstance(raw_value, (int, float)):
+            value = int(raw_value)
+            if value <= 0:
+                return fallback
+            return value
+        if isinstance(raw_value, str):
+            text = raw_value.strip()
+            if not text:
+                return fallback
+            if text.isdigit():
+                value = int(text)
+                if value <= 0:
+                    return fallback
+                return value
+            normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+            parsed = dt.datetime.fromisoformat(normalized)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=dt.timezone.utc)
+            return int(parsed.astimezone(dt.timezone.utc).timestamp())
+    except Exception:
+        return fallback
+    return fallback
+
+
+def _iso_from_unix(ts_unix: int) -> str:
+    return dt.datetime.fromtimestamp(ts_unix, tz=dt.timezone.utc).isoformat()
+
+
+def _normalize_analytics_events_payload(payload: object) -> tuple[list[dict[str, object]], int, str]:
+    if not isinstance(payload, dict):
+        return [], 0, "JSON body must be an object"
+    raw_events = payload.get("events")
+    if not isinstance(raw_events, list):
+        return [], 0, "events field must be an array"
+    if not raw_events:
+        return [], 0, "events array is empty"
+
+    accepted: list[dict[str, object]] = []
+    dropped = 0
+    now_unix = int(time.time())
+    for raw_event in raw_events[:ANALYTICS_MAX_EVENTS_PER_REQUEST]:
+        if not isinstance(raw_event, dict):
+            dropped += 1
+            continue
+        name = _sanitize_analytics_event_name(raw_event.get("name"))
+        if not name:
+            dropped += 1
+            continue
+        timestamp_unix = _parse_timestamp_unix(raw_event.get("timestamp_utc"), now_unix)
+        params_raw = raw_event.get("params", {})
+        params: dict[str, object]
+        if isinstance(params_raw, dict):
+            sanitized_params = sanitize_payload(params_raw)
+            params = sanitized_params if isinstance(sanitized_params, dict) else {}
+        else:
+            params = {}
+        accepted.append(
+            {
+                "name": name,
+                "timestamp_unix": timestamp_unix,
+                "timestamp_utc": _iso_from_unix(timestamp_unix),
+                "params": params,
+            }
+        )
+    if len(raw_events) > ANALYTICS_MAX_EVENTS_PER_REQUEST:
+        dropped += len(raw_events) - ANALYTICS_MAX_EVENTS_PER_REQUEST
+    if not accepted:
+        return [], dropped, "no valid events in request"
+    return accepted, dropped, ""
 
 
 def add_auth_ticket(provider: str, had_code: bool, error: str | None, subject: str = "") -> str:
@@ -807,6 +924,7 @@ def _start_device_session(provider: str, external_auth_url: str | None) -> tuple
     }
     with _device_session_store_lock:
         _device_session_store[session_id] = record
+    _invalidate_metrics_cache()
     return True, "ok", record
 
 
@@ -850,6 +968,7 @@ def _update_device_session_from_event(
         record["updated_at_utc"] = utc_now_iso()
         if ok:
             record["telegram_login_code"] = ""
+        _invalidate_metrics_cache()
         return True
 
 
@@ -903,6 +1022,17 @@ def _diagnostics_file_count() -> int:
     return count
 
 
+def _analytics_file_count() -> int:
+    count = 0
+    if not ANALYTICS_DIR.exists():
+        return 0
+    for _ in ANALYTICS_DIR.rglob("*.json"):
+        count += 1
+        if count >= 500000:
+            return count
+    return count
+
+
 def _device_session_stats() -> dict[str, int]:
     with _device_session_store_lock:
         stats = {"pending": 0, "completed": 0, "failed": 0, "expired": 0, "total": 0}
@@ -916,6 +1046,202 @@ def _device_session_stats() -> dict[str, int]:
             stats[status] += 1
             stats["total"] += 1
         return stats
+
+
+def _device_session_stats_window(window_hours: int) -> dict[str, int]:
+    threshold_unix = int(time.time()) - max(1, int(window_hours)) * 3600
+    now_unix = int(time.time())
+    with _device_session_store_lock:
+        stats = {"pending": 0, "completed": 0, "failed": 0, "expired": 0, "total": 0}
+        for record in _device_session_store.values():
+            created_at_unix = int(record.get("created_at_unix", 0))
+            if created_at_unix <= 0 or created_at_unix < threshold_unix:
+                continue
+            status = str(record.get("status", "pending"))
+            if status == "pending" and int(record.get("expires_at_unix", 0)) < now_unix:
+                status = "expired"
+            if status not in stats:
+                status = "failed"
+            stats[status] += 1
+            stats["total"] += 1
+        return stats
+
+
+def _window_day_keys(window_hours: int) -> list[str]:
+    hours = max(1, int(window_hours))
+    now = dt.datetime.now(dt.timezone.utc)
+    start = now - dt.timedelta(hours=hours)
+    cursor = dt.datetime(start.year, start.month, start.day, tzinfo=dt.timezone.utc)
+    end = dt.datetime(now.year, now.month, now.day, tzinfo=dt.timezone.utc)
+    keys: list[str] = []
+    while cursor <= end:
+        keys.append(cursor.strftime("%Y-%m-%d"))
+        cursor += dt.timedelta(days=1)
+    return keys
+
+
+def _top_counts(source: dict[str, int], limit: int = 10) -> list[dict[str, object]]:
+    items = sorted(source.items(), key=lambda item: (-item[1], item[0]))
+    return [{"key": key, "count": count} for key, count in items[: max(1, limit)]]
+
+
+def _aggregate_analytics_metrics(window_hours: int) -> dict[str, object]:
+    now_unix = int(time.time())
+    normalized_window_hours = max(1, int(window_hours))
+    window_start_unix = now_unix - normalized_window_hours * 3600
+    one_hour_start_unix = now_unix - 3600
+
+    event_counts: dict[str, int] = {}
+    auth_provider_starts: dict[str, int] = {}
+    files_scanned = 0
+    batches_scanned = 0
+    events_scanned = 0
+    events_last_window = 0
+    events_last_hour = 0
+    app_starts_last_window = 0
+    auth_starts_last_window = 0
+    auth_start_failed_last_window = 0
+    ble_connected_last_window = 0
+    unknown_saved_last_window = 0
+    unknown_uploaded_last_window = 0
+    scan_truncated = False
+
+    day_keys = _window_day_keys(normalized_window_hours)
+    for day_key in day_keys:
+        day_dir = ANALYTICS_DIR / day_key
+        if not day_dir.exists() or not day_dir.is_dir():
+            continue
+        for path in sorted(day_dir.glob("*.json")):
+            if files_scanned >= METRICS_MAX_FILES_SCANNED:
+                scan_truncated = True
+                break
+            files_scanned += 1
+            try:
+                parsed = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            batches_scanned += 1
+            events = parsed.get("events")
+            if not isinstance(events, list):
+                continue
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                event_name = _sanitize_analytics_event_name(event.get("name"))
+                if not event_name:
+                    continue
+                event_ts_unix = _parse_timestamp_unix(
+                    event.get("timestamp_unix", event.get("timestamp_utc")),
+                    now_unix,
+                )
+                events_scanned += 1
+                if event_ts_unix >= one_hour_start_unix:
+                    events_last_hour += 1
+                if event_ts_unix < window_start_unix:
+                    continue
+
+                events_last_window += 1
+                event_counts[event_name] = event_counts.get(event_name, 0) + 1
+
+                if event_name == "usage.app_start":
+                    app_starts_last_window += 1
+                elif event_name == "usage.auth_start":
+                    auth_starts_last_window += 1
+                    params = event.get("params")
+                    if isinstance(params, dict):
+                        provider = _sanitize_metric_key(params.get("provider", ""))
+                        if provider:
+                            auth_provider_starts[provider] = (
+                                auth_provider_starts.get(provider, 0) + 1
+                            )
+                elif event_name == "usage.auth_start_failed":
+                    auth_start_failed_last_window += 1
+                elif event_name == "usage.ble_connected":
+                    ble_connected_last_window += 1
+                elif event_name == "usage.unknown_device_saved":
+                    unknown_saved_last_window += 1
+                elif event_name == "usage.unknown_device_uploaded":
+                    unknown_saved_last_window += 1
+                    unknown_uploaded_last_window += 1
+
+        if scan_truncated:
+            break
+
+    return {
+        "window_hours": normalized_window_hours,
+        "files_scanned": files_scanned,
+        "batches_scanned": batches_scanned,
+        "events_scanned": events_scanned,
+        "events_last_1h": events_last_hour,
+        "events_last_window": events_last_window,
+        "app_starts_last_window": app_starts_last_window,
+        "auth_starts_last_window": auth_starts_last_window,
+        "auth_start_failed_last_window": auth_start_failed_last_window,
+        "ble_connected_last_window": ble_connected_last_window,
+        "unknown_saved_last_window": unknown_saved_last_window,
+        "unknown_uploaded_last_window": unknown_uploaded_last_window,
+        "auth_provider_starts_last_window": auth_provider_starts,
+        "top_events_last_window": _top_counts(event_counts, limit=10),
+        "scan_truncated": scan_truncated,
+    }
+
+
+def _dashboard_metrics_payload() -> dict[str, object]:
+    global _metrics_cache_payload
+    global _metrics_cache_expires_unix
+    now_unix = int(time.time())
+    with _metrics_cache_lock:
+        if (
+            _metrics_cache_payload is not None
+            and _metrics_cache_expires_unix > now_unix
+        ):
+            return dict(_metrics_cache_payload)
+
+    window_hours = max(1, METRICS_WINDOW_HOURS)
+    analytics = _aggregate_analytics_metrics(window_hours)
+    auth_window = _device_session_stats_window(window_hours)
+    auth_started = int(auth_window.get("total", 0))
+    auth_completed = int(auth_window.get("completed", 0))
+    auth_conversion_percent = round(
+        (auth_completed * 100.0 / auth_started) if auth_started > 0 else 0.0,
+        2,
+    )
+    payload = {
+        "ok": True,
+        "time_utc": utc_now_iso(),
+        "window_hours": window_hours,
+        "kpi": {
+            "events_last_1h": int(analytics.get("events_last_1h", 0)),
+            "events_last_window": int(analytics.get("events_last_window", 0)),
+            "app_starts_last_window": int(analytics.get("app_starts_last_window", 0)),
+            "auth_starts_last_window": int(analytics.get("auth_starts_last_window", 0)),
+            "auth_start_failed_last_window": int(
+                analytics.get("auth_start_failed_last_window", 0)
+            ),
+            "auth_sessions_started_last_window": auth_started,
+            "auth_sessions_completed_last_window": auth_completed,
+            "auth_conversion_percent_last_window": auth_conversion_percent,
+            "ble_connected_last_window": int(
+                analytics.get("ble_connected_last_window", 0)
+            ),
+            "unknown_saved_last_window": int(
+                analytics.get("unknown_saved_last_window", 0)
+            ),
+            "unknown_uploaded_last_window": int(
+                analytics.get("unknown_uploaded_last_window", 0)
+            ),
+            "diagnostics_files_total": _diagnostics_file_count(),
+            "analytics_batches_total": _analytics_file_count(),
+        },
+        "analytics": analytics,
+        "auth_sessions": {"window_hours": window_hours, "stats": auth_window},
+    }
+    with _metrics_cache_lock:
+        _metrics_cache_payload = dict(payload)
+        _metrics_cache_expires_unix = now_unix + max(1, METRICS_CACHE_TTL_SEC)
+    return payload
 
 
 def _dashboard_status_payload() -> dict[str, object]:
@@ -1127,6 +1453,7 @@ def _dashboard_status_payload() -> dict[str, object]:
             "host": HOST,
             "port": PORT,
             "diagnostics_count": _diagnostics_file_count(),
+            "analytics_batches_count": _analytics_file_count(),
         },
         "auth": {
             "tickets_active": len(_auth_ticket_store),
@@ -1191,6 +1518,7 @@ def _dashboard_status_payload() -> dict[str, object]:
                 else "Set Telegram bot username in dashboard to enable Telegram auth flow"
             ),
             "Use /health for probe checks",
+            "Use /ui/api/metrics for aggregated product KPIs",
             (
                 f"Update Google OAuth Redirect URI to: {google_redirect_hint}"
                 if google_redirect_hint and not google_redirect_matches_hint
@@ -1228,6 +1556,10 @@ def _render_dashboard_html() -> str:
     .bad { color: #f87171; }
     ul { margin: 6px 0; padding-left: 20px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+    .kpi-card { background: #111827; border: 1px solid #374151; border-radius: 8px; padding: 10px; }
+    .kpi-label { color: #9ca3af; font-size: 12px; margin-bottom: 6px; }
+    .kpi-value { color: #e5e7eb; font-size: 20px; font-weight: 700; }
     @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -1370,14 +1702,22 @@ def _render_dashboard_html() -> str:
       </div>
 
       <div class="card">
+        <h2>Product KPI (last <span id="metricsWindowHours">24</span>h)</h2>
+        <div id="kpiGrid" class="kpi-grid"></div>
+        <div id="metricsDetails" class="mono" style="margin-top:10px;"></div>
+      </div>
+
+      <div class="card">
         <h2>Endpoints</h2>
         <ul>
           <li><span class="mono">GET /health</span></li>
+          <li><span class="mono">GET /ui/api/metrics</span></li>
           <li><span class="mono">POST /auth/device/start</span></li>
           <li><span class="mono">GET /auth/device/status?session_id=...</span></li>
           <li><span class="mono">GET /auth/google/start</span></li>
           <li><span class="mono">GET /auth/google/callback</span></li>
           <li><span class="mono">GET /auth/telegram/start?state=...</span></li>
+          <li><span class="mono">POST /analytics/ingest</span></li>
           <li><span class="mono">POST /diagnostics/ingest</span></li>
         </ul>
       </div>
@@ -1387,12 +1727,21 @@ def _render_dashboard_html() -> str:
   <script>
     let latestRedirectHint = '';
     let latestStatusData = null;
+    let latestMetricsData = null;
     let currentWizardStep = 1;
 
     async function fetchStatus() {
       const r = await fetch('/ui/api/status', { cache: 'no-store' });
       if (!r.ok) {
         throw new Error('Status request failed: ' + r.status);
+      }
+      return await r.json();
+    }
+
+    async function fetchMetrics() {
+      const r = await fetch('/ui/api/metrics', { cache: 'no-store' });
+      if (!r.ok) {
+        throw new Error('Metrics request failed: ' + r.status);
       }
       return await r.json();
     }
@@ -1464,6 +1813,7 @@ def _render_dashboard_html() -> str:
         `public.base_url=${auth.public_base_url || '-'}`,
         `google.redirect_hint=${auth.google_redirect_hint || '-'}`,
         `diagnostics.count=${svc.diagnostics_count || 0}`,
+        `analytics.batches=${svc.analytics_batches_count || 0}`,
       ];
       document.getElementById('status').textContent = lines.join('\\n');
       renderStepList('steps', data.setup_steps || []);
@@ -1472,6 +1822,70 @@ def _render_dashboard_html() -> str:
       const dashboardActions = document.getElementById('dashboardActions');
       if (dashboardActions) {
         dashboardActions.textContent = actions.join('\\n');
+      }
+    }
+
+    function clearMetricsView() {
+      const grid = document.getElementById('kpiGrid');
+      const details = document.getElementById('metricsDetails');
+      if (grid) {
+        grid.innerHTML = '';
+      }
+      if (details) {
+        details.textContent = '';
+      }
+    }
+
+    function renderMetrics(data) {
+      latestMetricsData = data || null;
+      const kpi = (data && data.kpi) || {};
+      const analytics = (data && data.analytics) || {};
+      const authSessions = ((data && data.auth_sessions) || {}).stats || {};
+      const windowHours = Number((data && data.window_hours) || 24);
+      const windowEl = document.getElementById('metricsWindowHours');
+      if (windowEl) {
+        windowEl.textContent = String(windowHours);
+      }
+
+      const cards = [
+        { label: 'Events 24h/window', value: Number(kpi.events_last_window || 0) },
+        { label: 'Events 1h', value: Number(kpi.events_last_1h || 0) },
+        { label: 'App starts', value: Number(kpi.app_starts_last_window || 0) },
+        { label: 'Auth starts', value: Number(kpi.auth_starts_last_window || 0) },
+        { label: 'Auth conversion %', value: Number(kpi.auth_conversion_percent_last_window || 0).toFixed(2) },
+        { label: 'BLE connected', value: Number(kpi.ble_connected_last_window || 0) },
+        { label: 'Unknown uploaded', value: Number(kpi.unknown_uploaded_last_window || 0) },
+        { label: 'Diagnostics files', value: Number(kpi.diagnostics_files_total || 0) },
+      ];
+      const grid = document.getElementById('kpiGrid');
+      if (grid) {
+        grid.innerHTML = '';
+        for (const card of cards) {
+          const node = document.createElement('div');
+          node.className = 'kpi-card';
+          node.innerHTML = `<div class="kpi-label">${card.label}</div><div class="kpi-value">${card.value}</div>`;
+          grid.appendChild(node);
+        }
+      }
+
+      const topEvents = Array.isArray(analytics.top_events_last_window) ? analytics.top_events_last_window : [];
+      const providerStarts = analytics.auth_provider_starts_last_window || {};
+      const detailLines = [
+        `window_hours=${windowHours}`,
+        `auth_sessions.total=${Number(authSessions.total || 0)}`,
+        `auth_sessions.completed=${Number(authSessions.completed || 0)}`,
+        `auth_sessions.failed=${Number(authSessions.failed || 0)}`,
+        `auth_sessions.expired=${Number(authSessions.expired || 0)}`,
+        `analytics.files_scanned=${Number(analytics.files_scanned || 0)}`,
+        `analytics.batches_scanned=${Number(analytics.batches_scanned || 0)}`,
+        `analytics.events_scanned=${Number(analytics.events_scanned || 0)}`,
+        `analytics.scan_truncated=${Boolean(analytics.scan_truncated)}`,
+        `auth_provider_starts=${JSON.stringify(providerStarts)}`,
+        `top_events=${JSON.stringify(topEvents)}`,
+      ];
+      const details = document.getElementById('metricsDetails');
+      if (details) {
+        details.textContent = detailLines.join('\\n');
       }
     }
 
@@ -1553,6 +1967,7 @@ def _render_dashboard_html() -> str:
       } else {
         renderWizard(data);
         setWizardStep(currentWizardStep);
+        clearMetricsView();
       }
     }
 
@@ -1597,6 +2012,21 @@ def _render_dashboard_html() -> str:
       try {
         const data = await fetchStatus();
         renderStatus(data);
+        const setup = data.setup || {};
+        const setupDone = !!setup.completed && !!setup.ready;
+        if (setupDone) {
+          try {
+            const metrics = await fetchMetrics();
+            renderMetrics(metrics);
+          } catch (metricsError) {
+            const details = document.getElementById('metricsDetails');
+            if (details) {
+              details.textContent = 'Metrics error: ' + metricsError;
+            }
+          }
+        } else {
+          latestMetricsData = null;
+        }
       } catch (e) {
         document.getElementById('headline').textContent = 'Status error: ' + e;
       }
@@ -1825,6 +2255,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
             return True, "ok"
         return False, "Invalid diagnostics API key"
 
+    def _require_analytics_key_if_enabled(self) -> tuple[bool, str]:
+        if not ANALYTICS_API_KEY:
+            return True, "ok"
+        received = self.headers.get("X-API-Key", "")
+        if hmac.compare_digest(received, ANALYTICS_API_KEY):
+            return True, "ok"
+        return False, "Invalid analytics API key"
+
     def _google_callback_html(self, *, ok: bool, message: str, subject: str = "") -> str:
         status_label = "SUCCESS" if ok else "FAILED"
         color = "#34d399" if ok else "#f87171"
@@ -1878,6 +2316,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
             if not self._require_local_ui():
                 return
             self._json_response(HTTPStatus.OK, _dashboard_status_payload())
+            return
+
+        if path == "/ui/api/metrics":
+            if not self._require_local_ui():
+                return
+            self._json_response(HTTPStatus.OK, _dashboard_metrics_payload())
             return
 
         if path == "/auth/google/start":
@@ -2369,6 +2813,64 @@ class GatewayHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/analytics/ingest":
+            key_ok, key_message = self._require_analytics_key_if_enabled()
+            if not key_ok:
+                self._json_response(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": key_message})
+                return
+
+            try:
+                payload = parse_json_body(self)
+            except ValueError as exc:
+                self._json_response(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+                return
+
+            events, dropped, error = _normalize_analytics_events_payload(payload)
+            if error:
+                self._json_response(HTTPStatus.BAD_REQUEST, {"ok": False, "error": error})
+                return
+            batch_id = str(uuid.uuid4())
+            now_unix = int(time.time())
+            schema = "anonymous_analytics_v1"
+            if isinstance(payload, dict):
+                schema_raw = str(payload.get("schema", "")).strip()
+                if schema_raw:
+                    schema = schema_raw[:120]
+            batch = {
+                "batch_id": batch_id,
+                "received_at_utc": utc_now_iso(),
+                "received_at_unix": now_unix,
+                "schema": schema,
+                "events": events,
+                "events_count": len(events),
+                "dropped_events": dropped,
+            }
+            day = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+            out_dir = ANALYTICS_DIR / day
+            out_path = out_dir / f"{now_unix}_{batch_id}.json"
+            try:
+                write_json(out_path, batch)
+                _invalidate_metrics_cache()
+            except Exception as exc:  # noqa: BLE001
+                self._json_response(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"ok": False, "error": f"write error: {exc}"},
+                )
+                return
+
+            self._json_response(
+                HTTPStatus.ACCEPTED,
+                {
+                    "ok": True,
+                    "batch_id": batch_id,
+                    "accepted_events": len(events),
+                    "dropped_events": dropped,
+                    "stored": True,
+                    "stored_path_hint": str(out_path.relative_to(DATA_DIR)),
+                },
+            )
+            return
+
         if path == "/diagnostics/ingest":
             key_ok, key_message = self._require_diagnostics_key_if_enabled()
             if not key_ok:
@@ -2395,6 +2897,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
             try:
                 write_json(out_path, event)
+                _invalidate_metrics_cache()
             except Exception as exc:  # noqa: BLE001
                 self._json_response(
                     HTTPStatus.INTERNAL_SERVER_ERROR,

@@ -29,6 +29,15 @@ When quick tunnel is enabled, response also includes:
 - expected Google redirect hint (`google_redirect_hint`)
 - redirect auto-follow flag (`google_auto_redirect_from_public_url`)
 
+## `GET /ui/api/metrics`
+
+Returns aggregated product KPIs for dashboard cards (windowed metrics, auth funnel, top events).
+
+Notes:
+- endpoint is local-only (same policy as `/ui/api/status`)
+- metrics are aggregated from anonymous analytics batches and auth session state
+- payload includes `kpi`, `analytics`, and `auth_sessions` blocks
+
 ## `POST /ui/api/config/google`
 
 Updates runtime auth config (Google + Telegram) and dashboard local-name settings.
@@ -146,6 +155,33 @@ Optional protection:
 Storage:
 - Files are written under `/data/diagnostics/YYYY-MM-DD/<event_id>.json`
 
+## `POST /analytics/ingest`
+
+Accepts anonymous analytics batch payload from app runtime.
+
+Expected body shape:
+
+```json
+{
+  "schema": "anonymous_analytics_v1",
+  "events": [
+    {
+      "name": "usage.app_start",
+      "timestamp_utc": "2026-02-14T12:00:00Z",
+      "params": {
+        "backend": "customWebhook"
+      }
+    }
+  ]
+}
+```
+
+Optional protection:
+- `X-API-Key` header when `ANALYTICS_INGEST_API_KEY` is configured.
+
+Storage:
+- Files are written under `/data/analytics/YYYY-MM-DD/<timestamp>_<batch_id>.json`
+
 ## `GET /profiles/manifest`
 
 Serves optional profile manifest from:
@@ -179,6 +215,11 @@ Client profile-registry config supports:
 - `TELEGRAM_AUTH_ENABLED` (default auto when token+username are set)
 - `AUTH_SUBJECT_SALT`
 - `DIAGNOSTICS_INGEST_API_KEY` (optional)
+- `ANALYTICS_INGEST_API_KEY` (optional)
+- `ANALYTICS_MAX_EVENTS_PER_REQUEST` (default `250`)
+- `METRICS_WINDOW_HOURS` (default `24`)
+- `METRICS_CACHE_TTL_SEC` (default `10`)
+- `METRICS_MAX_FILES_SCANNED` (default `5000`)
 - `APP_REDIRECT_BASE` (optional hint for auth callback redirect)
 - `AUTH_DEVICE_SESSION_TTL_SEC` (default `300`)
 - `LOCAL_DASHBOARD_NAME` (default `backlight`)
