@@ -81,6 +81,7 @@ What it does:
 - starts `backlight-stack.service`
 - configures mDNS hostname for `.local` access
 - exposes web console for all next setup actions
+- auto-starts temporary trycloudflare URL if no `CLOUDFLARED_TOKEN` is configured
 
 Optional flags:
 - `INSTALL_CLOUDFLARED=1` (default)
@@ -116,7 +117,8 @@ Set at least:
 - `AUTH_SUBJECT_SALT`
 - `TELEGRAM_BOT_TOKEN` (if Telegram is used)
 - optional `DIAGNOSTICS_INGEST_API_KEY`
-- and Google values if using Google auth
+- Google values can be filled later in web dashboard (`/ui`)
+- `ENABLE_TRYCLOUDFLARE=true` keeps temporary public URL enabled by default
 
 4. Start stack via systemd:
 
@@ -152,6 +154,16 @@ sudo systemctl enable --now backlight-cloudflared.service
 - `POST /auth/telegram/verify` - Telegram hash verification
 - `POST /diagnostics/ingest` - anonymous diagnostics ingest (PII keys redacted)
 - `GET /profiles/manifest` - optional profile manifest from local storage
+
+### Google setup without manual `.env` editing
+
+1. Start stack once (`launch_product.sh`).
+2. Open `http://<name>.local/ui`.
+3. Wait for dashboard to show current public URL (`*.trycloudflare.com`).
+4. Put `<public-url>/auth/google/callback` into Google OAuth redirect settings.
+5. Fill Google Client ID/Secret/Redirect in dashboard and Save.
+
+If server restarts and temporary URL changes, dashboard highlights new redirect hint.
 
 ## 10. HIL stand support on same Arch node
 

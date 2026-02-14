@@ -19,6 +19,7 @@ import ipaddress
 import json
 import os
 import pathlib
+import re
 import threading
 import time
 import urllib.error
@@ -46,6 +47,10 @@ DIAGNOSTICS_DIR = DATA_DIR / "diagnostics"
 PROFILE_DIR = DATA_DIR / "profiles"
 PROFILE_MANIFEST_PATH = PROFILE_DIR / "manifest.json"
 RUNTIME_CONFIG_PATH = DATA_DIR / "runtime_config.json"
+RUNTIME_SHARED_DIR = pathlib.Path(os.getenv("RUNTIME_SHARED_DIR", "/runtime"))
+QUICK_TUNNEL_LOG_PATH = pathlib.Path(
+    os.getenv("QUICK_TUNNEL_LOG_PATH", str(RUNTIME_SHARED_DIR / "cloudflared.log"))
+)
 
 _ticket_store_lock = threading.Lock()
 _auth_ticket_store: dict[str, dict[str, object]] = {}
@@ -76,6 +81,10 @@ PII_KEYS = {
     "cookie",
 }
 MAX_STRING_VALUE_LEN = 2048
+TRYCLOUDFLARE_URL_RE = re.compile(
+    r"https://[a-z0-9-]+\.trycloudflare\.com",
+    re.IGNORECASE,
+)
 
 
 def utc_now_iso() -> str:
@@ -336,6 +345,34 @@ def _google_config_ready() -> bool:
     return bool(
         g["enabled"] and g["client_id"] and g["client_secret"] and g["redirect_uri"]
     )
+
+
+def _tail_text(path: pathlib.Path, max_bytes: int = 131072) -> str:
+    if not path.exists() or not path.is_file():
+        return ""
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - max_bytes), os.SEEK_SET)
+            raw = handle.read()
+        return raw.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _quick_tunnel_public_base_url() -> str:
+    text = _tail_text(QUICK_TUNNEL_LOG_PATH)
+    if not text:
+        return ""
+    matches = TRYCLOUDFLARE_URL_RE.findall(text)
+    if not matches:
+        return ""
+    return matches[-1].rstrip("/")
+
+
+def _normalize_redirect_uri(raw: str) -> str:
+    return raw.strip().rstrip("/")
 
 
 def _build_google_start_url(*, state: str) -> str:
@@ -600,6 +637,16 @@ def _dashboard_status_payload() -> dict[str, object]:
     device_stats = _device_session_stats()
     uptime_sec = int(time.time()) - STARTED_AT_UNIX
     local_name = str(runtime.get("dashboard_local_name", LOCAL_DASHBOARD_NAME)).strip() or LOCAL_DASHBOARD_NAME
+    public_base_url = _quick_tunnel_public_base_url()
+    google_redirect_hint = (
+        f"{public_base_url}/auth/google/callback" if public_base_url else ""
+    )
+    current_google_redirect = str(google["redirect_uri"]).strip()
+    google_redirect_matches_hint = bool(
+        google_redirect_hint
+        and _normalize_redirect_uri(current_google_redirect)
+        == _normalize_redirect_uri(google_redirect_hint)
+    )
 
     google_ready = bool(
         google["enabled"]
@@ -630,14 +677,29 @@ def _dashboard_status_payload() -> dict[str, object]:
         {
             "id": "google-redirect",
             "title": "Google Redirect URI is configured",
-            "done": bool(google["redirect_uri"]),
-            "details": "Should match OAuth app settings exactly",
+            "done": bool(current_google_redirect)
+            and (not google_redirect_hint or google_redirect_matches_hint),
+            "details": (
+                f"Expected now: {google_redirect_hint}"
+                if google_redirect_hint
+                else "Should match OAuth app settings exactly"
+            ),
         },
         {
             "id": "google-enabled",
             "title": "Google auth is enabled",
             "done": bool(google["enabled"]),
             "details": "Enable Google flow after filling all credentials",
+        },
+        {
+            "id": "quick-tunnel",
+            "title": "Temporary public URL is active",
+            "done": bool(public_base_url),
+            "details": (
+                f"Current URL: {public_base_url}"
+                if public_base_url
+                else "Quick tunnel URL not detected yet. Wait for cloudflared startup."
+            ),
         },
     ]
 
@@ -658,6 +720,9 @@ def _dashboard_status_payload() -> dict[str, object]:
             "google_enabled": bool(google["enabled"]),
             "google_start_endpoint": "/auth/google/start",
             "google_callback_endpoint": "/auth/google/callback",
+            "public_base_url": public_base_url,
+            "google_redirect_hint": google_redirect_hint,
+            "google_redirect_matches_hint": google_redirect_matches_hint,
         },
         "setup_steps": steps,
         "runtime_config": {
@@ -670,6 +735,9 @@ def _dashboard_status_payload() -> dict[str, object]:
             "google_allowed_domain": str(google["allowed_domain"]),
             "google_require_verified_email": bool(google["require_verified_email"]),
             "google_client_secret_configured": bool(google["client_secret"]),
+            "public_base_url": public_base_url,
+            "google_redirect_hint": google_redirect_hint,
+            "google_redirect_matches_hint": google_redirect_matches_hint,
         },
         "actions": [
             "Open /ui to complete setup actions in browser",
@@ -677,6 +745,11 @@ def _dashboard_status_payload() -> dict[str, object]:
             "Run: sudo systemctl enable --now backlight-hil.service (optional HIL mode)",
             "Use /auth/google/start to test Google login",
             "Use /health for probe checks",
+            (
+                f"Update Google OAuth Redirect URI to: {google_redirect_hint}"
+                if google_redirect_hint and not google_redirect_matches_hint
+                else "Google Redirect URI is synchronized with current public URL"
+            ),
         ],
     }
 
@@ -728,6 +801,7 @@ def _render_dashboard_html() -> str:
     <div class="card">
       <h2>Google auth config</h2>
       <p class="muted">All required setup actions are available here. Save config, then test Google flow.</p>
+      <div id="publicUrlHint" class="muted" style="margin-bottom: 10px;"></div>
       <div class="grid">
         <div>
           <label>Dashboard name (.local)</label>
@@ -816,6 +890,8 @@ def _render_dashboard_html() -> str:
         `device_sessions.completed=${(auth.device_sessions || {}).completed || 0}`,
         `google.configured=${auth.google_configured}`,
         `google.enabled=${auth.google_enabled}`,
+        `public.base_url=${auth.public_base_url || '-'}`,
+        `google.redirect_hint=${auth.google_redirect_hint || '-'}`,
         `diagnostics.count=${svc.diagnostics_count || 0}`,
       ];
       document.getElementById('status').textContent = lines.join('\\n');
@@ -832,6 +908,18 @@ def _render_dashboard_html() -> str:
       document.getElementById('googleAllowedDomain').value = cfg.google_allowed_domain || '';
       document.getElementById('googleEnabled').value = String(cfg.google_enabled || false);
       document.getElementById('googleStartLink').href = '/auth/google/start';
+
+      const hintEl = document.getElementById('publicUrlHint');
+      const publicBase = cfg.public_base_url || '';
+      const redirectHint = cfg.google_redirect_hint || '';
+      const redirectMatches = !!cfg.google_redirect_matches_hint;
+      if (!publicBase) {
+        hintEl.innerHTML = '<span class="warn">No public URL detected yet.</span> If this is a fresh start, wait 10-20s and press Refresh.';
+      } else if (!redirectMatches) {
+        hintEl.innerHTML = `<span class="warn">Public URL changed:</span> <span class="mono">${publicBase}</span><br/>Update Google Redirect URI to <span class="mono">${redirectHint}</span> in Google Console and here, then Save.`;
+      } else {
+        hintEl.innerHTML = `<span class="ok">Public URL active:</span> <span class="mono">${publicBase}</span><br/><span class="ok">Google Redirect URI is up to date.</span>`;
+      }
     }
 
     async function refresh() {
@@ -1258,6 +1346,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
             updated = _update_runtime_config(payload)
             local_name = str(updated.get("dashboard_local_name", LOCAL_DASHBOARD_NAME))
+            public_base_url = _quick_tunnel_public_base_url()
+            google_redirect_hint = (
+                f"{public_base_url}/auth/google/callback" if public_base_url else ""
+            )
             message = (
                 f"Configuration saved. Dashboard host is http://{local_name}.local "
                 "(if hostname/mdns are configured on host OS)."
@@ -1278,6 +1370,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                         "google_client_secret_configured": bool(
                             str(updated.get("google_client_secret", "")).strip()
                         ),
+                        "public_base_url": public_base_url,
+                        "google_redirect_hint": google_redirect_hint,
                     },
                 },
             )
@@ -1429,6 +1523,7 @@ def run() -> None:
                 "port": PORT,
                 "data_dir": str(DATA_DIR),
                 "dashboard_hint": f"http://{LOCAL_DASHBOARD_NAME}.local",
+                "quick_tunnel_log_path": str(QUICK_TUNNEL_LOG_PATH),
             },
             ensure_ascii=True,
         ),

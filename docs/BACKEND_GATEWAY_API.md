@@ -24,6 +24,10 @@ Access policy:
 
 Returns setup checklist, runtime status, and auth/diagnostics metrics.
 
+When quick tunnel is enabled, response also includes:
+- current temporary public URL (`public_base_url`)
+- expected Google redirect hint (`google_redirect_hint`)
+
 ## `POST /ui/api/config/google`
 
 Updates runtime Google config and dashboard local-name settings.
@@ -170,3 +174,4 @@ Client profile-registry config supports:
 - `GOOGLE_PROMPT` (default `consent`)
 - `GOOGLE_ALLOWED_DOMAIN` (optional)
 - `GOOGLE_REQUIRE_VERIFIED_EMAIL` (default `true`)
+- `QUICK_TUNNEL_LOG_PATH` (default `/runtime/cloudflared.log`)

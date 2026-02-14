@@ -53,6 +53,7 @@ This document is a plain status snapshot of what is already implemented versus w
   - `/auth/telegram/verify`
   - `/diagnostics/ingest`
   - `/profiles/manifest`
+- Local dashboard now shows current temporary public URL (trycloudflare) and exact Google redirect hint.
 - Deploy templates included:
   - Docker Compose
   - Caddy config
