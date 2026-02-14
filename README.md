@@ -12,6 +12,15 @@ After launch, open local console from LAN:
 
 - `http://backlight.local` (or your configured `LOCAL_DASHBOARD_NAME`)
 
+## Release builds via GitHub Actions
+
+Builds for **Android, Linux, and Windows** run automatically when you push a tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
 ## Product roadmap
 
 The current product roadmap and implementation checklist are tracked in:
