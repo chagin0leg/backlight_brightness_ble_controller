@@ -1,0 +1,15 @@
+FROM python:3.12-alpine
+
+WORKDIR /app
+
+COPY app.py /app/app.py
+
+ENV PYTHONUNBUFFERED=1
+ENV GATEWAY_HOST=0.0.0.0
+ENV GATEWAY_PORT=8080
+ENV DATA_DIR=/data
+ENV MAX_BODY_BYTES=1048576
+
+EXPOSE 8080
+
+CMD ["python", "/app/app.py"]

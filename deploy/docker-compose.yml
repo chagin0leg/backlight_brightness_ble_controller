@@ -1,0 +1,48 @@
+services:
+  gateway:
+    build:
+      context: ./gateway
+    container_name: backlight-gateway
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    volumes:
+      - backlight_data:/data
+    ports:
+      - "127.0.0.1:${GATEWAY_BIND_PORT:-18080}:8080"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: backlight-caddy
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_healthy
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "127.0.0.1:${CADDY_BIND_PORT:-18081}:80"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: backlight-cloudflared
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    depends_on:
+      - caddy
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN}
+
+volumes:
+  backlight_data:

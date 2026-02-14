@@ -16,8 +16,8 @@ Use outbound tunnel-first networking:
 
 ## 2. Minimum service set
 
-- Reverse proxy: Caddy or Nginx
-- App API: lightweight runtime (Go/FastAPI/Node)
+- Reverse proxy: Caddy
+- App API: lightweight Python gateway (included in `deploy/gateway/app.py`)
 - Optional metadata: SQLite
 - Process supervisor: systemd
 
@@ -50,7 +50,74 @@ Use serverless/free-tier backends for heavy or bursty tasks.
 - deny-list sensitive fields in request body logs
 - no PII persistence by default
 
-## 7. Scaling path
+## 7. Included deployment templates
+
+The repository includes ready templates:
+
+- `deploy/docker-compose.yml`
+- `deploy/.env.example`
+- `deploy/caddy/Caddyfile`
+- `deploy/cloudflared/config.yml`
+- `deploy/systemd/backlight-stack.service`
+- `deploy/systemd/backlight-cloudflared.service`
+- `deploy/gateway/app.py`
+
+## 8. Quick start on Arch Linux
+
+1. Install base packages:
+
+```bash
+sudo pacman -Syu --noconfirm docker docker-compose cloudflared
+sudo systemctl enable --now docker
+```
+
+2. Copy project to server (example path):
+
+```bash
+sudo mkdir -p /opt/backlight-stack
+sudo chown -R "$USER":"$USER" /opt/backlight-stack
+```
+
+3. Prepare environment:
+
+```bash
+cp /opt/backlight-stack/deploy/.env.example /opt/backlight-stack/deploy/.env
+```
+
+Set at least:
+- `AUTH_SUBJECT_SALT`
+- `TELEGRAM_BOT_TOKEN` (if Telegram is used)
+- optional `DIAGNOSTICS_INGEST_API_KEY`
+
+4. Start stack via systemd:
+
+```bash
+sudo cp /opt/backlight-stack/deploy/systemd/backlight-stack.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now backlight-stack.service
+```
+
+5. Enable Cloudflare tunnel (optional, recommended when no public IP):
+
+- Fill tunnel UUID/credentials in `/opt/backlight-stack/deploy/cloudflared/config.yml`
+- Then:
+
+```bash
+sudo cp /opt/backlight-stack/deploy/systemd/backlight-cloudflared.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now backlight-cloudflared.service
+```
+
+## 9. Gateway endpoint summary
+
+- `GET /health` - service health
+- `GET /auth/callback` - OAuth callback relay (code is not logged)
+- `GET /auth/ticket?ticket=...` - short-lived callback ticket fetch
+- `POST /auth/telegram/verify` - Telegram hash verification
+- `POST /diagnostics/ingest` - anonymous diagnostics ingest (PII keys redacted)
+- `GET /profiles/manifest` - optional profile manifest from local storage
+
+## 10. Scaling path
 
 1. Start with tunnel + single node.
 2. Move profile manifest to CDN/object storage.

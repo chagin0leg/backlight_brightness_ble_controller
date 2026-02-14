@@ -1,0 +1,14 @@
+[Unit]
+Description=Cloudflared tunnel for Backlight BLE stack
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/cloudflared --config /opt/backlight-stack/deploy/cloudflared/config.yml tunnel run
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

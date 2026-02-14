@@ -92,11 +92,11 @@ This document captures the agreed scope for turning the project into a productio
 
 ## Phase 3.6: Arch Linux lightweight server mode
 
-- [ ] Add deployment template for Arch Linux (2c/16GB baseline).
-- [ ] Configure tunnel-first ingress (Cloudflare Tunnel preferred).
-- [ ] Expose stable OAuth callback URL behind tunnel hostname.
-- [ ] Add health checks and watchdog restart policy.
-- [ ] Keep server role minimal: auth callback, diagnostics ingest, manifest proxy.
+- [x] Add deployment template for Arch Linux (2c/16GB baseline).
+- [x] Configure tunnel-first ingress (Cloudflare Tunnel preferred).
+- [x] Expose stable OAuth callback URL behind tunnel hostname.
+- [x] Add health checks and watchdog restart policy.
+- [x] Keep server role minimal: auth callback, diagnostics ingest, manifest proxy.
 
 ## Phase 4: Cross-platform implementation matrix
 

@@ -1,0 +1,60 @@
+# Current Implementation Status
+
+This document is a plain status snapshot of what is already implemented versus what is still pending.
+
+## What is already implemented
+
+## Core product flow (working baseline)
+
+- BLE scan/connect/pair/disconnect flow exists.
+- Profile-based device matching exists (instead of hardcoded single path).
+- ELK-BLEDOM profile is included as JSON profile.
+- Brightness-to-command sync pipeline exists.
+- Basic anti-spam threshold on brightness writes exists.
+
+## Unknown device handling
+
+- Unknown profile detection exists.
+- Local diagnostics snapshot generation exists.
+- Optional diagnostics upload endpoint integration exists (opt-in).
+
+## Configuration and cloud scaffolding
+
+- Runtime cloud config file is supported (`assets/runtime/app_cloud_config.json`).
+- Remote profile manifest loading path exists.
+- Auth provider model and UI hooks are implemented.
+- Guest mode auth session shortcut is implemented.
+
+## Self-hosted backend templates
+
+- Minimal Python gateway implemented:
+  - `/health`
+  - `/auth/callback`
+  - `/auth/ticket`
+  - `/auth/telegram/verify`
+  - `/diagnostics/ingest`
+  - `/profiles/manifest`
+- Deploy templates included:
+  - Docker Compose
+  - Caddy config
+  - Cloudflared config template
+  - systemd service templates
+
+## What is not yet production-ready
+
+- Cross-platform brightness providers are mostly stubs outside Windows.
+- Multi-provider auth is scaffold-level (no full OAuth token exchange flow in app yet).
+- UI is still minimal status-driven; no polished product UX yet.
+- No finalized ad SDK integration yet.
+- No persistent user settings/profile preference storage yet.
+- No mature reconnect orchestration and fallback strategy yet.
+- No automated tests/CI coverage for new flows yet.
+- No signed profile update pipeline yet.
+
+## Bottom line
+
+The project already has a **real working technical core**, but it is still in **early productization stage**.
+
+In short:
+- Not "just a plan" anymore.
+- Not yet a finished consumer product release.
