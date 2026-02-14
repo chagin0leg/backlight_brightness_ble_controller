@@ -39,7 +39,7 @@ class AuthActionResult {
 class AuthController extends GetxController {
   AuthController({AuthSessionStorage? sessionStorage})
       : _sessionStorage =
-            sessionStorage ?? SharedPreferencesAuthSessionStorage();
+            sessionStorage ?? ResilientAuthSessionStorage();
 
   final AuthSessionStorage _sessionStorage;
   final RxBool isEnabled = false.obs;

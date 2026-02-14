@@ -27,6 +27,7 @@ This document is a plain status snapshot of what is already implemented versus w
 - Device auth polling loop is implemented in client auth controller.
 - Client now supports browser launch, pending-session control, and polling retry guardrails.
 - Session persistence, restoration after restart, and expiry-based re-auth prompts are implemented.
+- Auth session storage now uses secure storage when available, with safe fallback for unsupported environments.
 - Main app screen now uses grouped sections (cloud/auth/device/diagnostics/ads) with clearer onboarding actions.
 - Basic AdMob banner runtime integration is implemented with platform-safe fallback.
 - Persistent app settings are implemented (poll interval, sync on/off, min/max output brightness, diagnostics consent, anonymous analytics toggle).
