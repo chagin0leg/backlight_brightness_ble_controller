@@ -76,6 +76,8 @@ This document captures the agreed scope for turning the project into a productio
 - [x] Add authentication provider abstraction and UI hooks.
 - [x] Add device auth session flow (start + polling status).
 - [x] Implement Google OAuth callback exchange and token verification on backend.
+- [x] Add client-side session persistence/restore and re-auth prompts.
+- [x] Add auth onboarding UX controls (browser launch, cancel/retry, signed-in state).
 - [ ] Wire provider entries for:
   - [x] Google
   - [x] Microsoft

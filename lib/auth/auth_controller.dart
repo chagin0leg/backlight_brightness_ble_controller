@@ -4,6 +4,8 @@ import 'package:get/get.dart';
 
 import 'package:backlight_brightness_ble_controller/auth/auth_gateway_client.dart';
 import 'package:backlight_brightness_ble_controller/auth/auth_provider.dart';
+import 'package:backlight_brightness_ble_controller/auth/auth_session.dart';
+import 'package:backlight_brightness_ble_controller/auth/auth_session_storage.dart';
 import 'package:backlight_brightness_ble_controller/cloud/app_cloud_config.dart';
 
 class AuthProviderOption {
@@ -22,20 +24,6 @@ class AuthProviderOption {
   final String? notes;
 }
 
-class AuthSession {
-  const AuthSession({
-    required this.provider,
-    required this.userId,
-    required this.displayName,
-    required this.issuedAtUtc,
-  });
-
-  final AuthProviderType provider;
-  final String userId;
-  final String displayName;
-  final DateTime issuedAtUtc;
-}
-
 class AuthActionResult {
   const AuthActionResult({
     required this.ok,
@@ -49,10 +37,16 @@ class AuthActionResult {
 }
 
 class AuthController extends GetxController {
+  AuthController({AuthSessionStorage? sessionStorage})
+      : _sessionStorage =
+            sessionStorage ?? SharedPreferencesAuthSessionStorage();
+
+  final AuthSessionStorage _sessionStorage;
   final RxBool isEnabled = false.obs;
   final RxList<AuthProviderOption> options = <AuthProviderOption>[].obs;
   final Rxn<AuthSession> session = Rxn<AuthSession>();
   final RxString status = 'Authorization is not configured'.obs;
+  final RxnString sessionWarning = RxnString();
   final RxBool isSignInPending = false.obs;
   final RxInt pollErrorCount = 0.obs;
   final RxnString pendingSessionId = RxnString();
@@ -60,16 +54,30 @@ class AuthController extends GetxController {
 
   AuthGatewayClient? _gatewayClient;
   Timer? _authPollTimer;
+  Timer? _sessionWatchdog;
   DateTime? _sessionStartedAtUtc;
   int _pollIntervalSeconds = 3;
   int _sessionTimeoutSeconds = 240;
+  int _sessionCheckIntervalSeconds = 30;
   AuthProviderType? _pendingProvider;
   bool _pollInFlight = false;
+  bool _rememberSession = true;
+  bool _reauthPromptShown = false;
+  Duration _sessionTtl = const Duration(days: 30);
+  Duration _reauthPromptBefore = const Duration(hours: 24);
 
-  void configure(AppCloudConfig config) {
+  Future<void> configure(AppCloudConfig config) async {
     isEnabled.value = config.auth.enabled;
     _pollIntervalSeconds = config.auth.pollIntervalSeconds.clamp(1, 30).toInt();
     _sessionTimeoutSeconds = config.auth.sessionTimeoutSeconds.clamp(30, 1800).toInt();
+    _sessionCheckIntervalSeconds =
+        config.auth.sessionCheckIntervalSeconds.clamp(5, 300).toInt();
+    _rememberSession = config.auth.rememberSession;
+    _sessionTtl =
+        Duration(minutes: config.auth.sessionTtlMinutes.clamp(5, 525600).toInt());
+    _reauthPromptBefore = Duration(
+      minutes: config.auth.reauthPromptMinutes.clamp(1, 10080).toInt(),
+    );
     _gatewayClient = config.auth.canUseDeviceFlow
         ? AuthGatewayClient(
             deviceStartUrl: config.auth.deviceStartUrl!,
@@ -90,18 +98,35 @@ class AuthController extends GetxController {
         .toList(growable: false);
 
     if (!isEnabled.value) {
+      _stopPolling();
+      _sessionWatchdog?.cancel();
+      session.value = null;
+      sessionWarning.value = null;
+      if (_rememberSession) {
+        unawaited(_sessionStorage.clear());
+      }
       status.value = 'Authorization disabled by cloud configuration';
       return;
     }
+
+    if (!_rememberSession) {
+      session.value = null;
+      await _sessionStorage.clear();
+    }
+
+    final restored = await _restoreSession();
+    _startSessionWatchdog();
 
     if (options.isEmpty) {
       status.value = 'Authorization enabled but providers list is empty';
       return;
     }
 
-    status.value = _gatewayClient == null
-        ? 'Authorization configured (${options.length} providers)'
-        : 'Authorization configured with device flow (${options.length} providers)';
+    if (!restored) {
+      status.value = _gatewayClient == null
+          ? 'Authorization configured (${options.length} providers)'
+          : 'Authorization configured with device flow (${options.length} providers)';
+    }
   }
 
   Future<AuthActionResult> beginSignIn(AuthProviderType providerType) async {
@@ -286,20 +311,35 @@ class AuthController extends GetxController {
     required AuthProviderType provider,
     required String userId,
     required String displayName,
+    Duration? ttl,
   }) {
+    final now = DateTime.now().toUtc();
+    final expiresAt = now.add(ttl ?? _sessionTtl);
     session.value = AuthSession(
       provider: provider,
       userId: userId,
       displayName: displayName,
-      issuedAtUtc: DateTime.now().toUtc(),
+      issuedAtUtc: now,
+      expiresAtUtc: expiresAt,
     );
+    sessionWarning.value = null;
+    _reauthPromptShown = false;
+    if (_rememberSession) {
+      unawaited(_sessionStorage.write(session.value!));
+    }
     status.value = 'Signed in as $displayName via ${authProviderDisplayName(provider)}';
+    _startSessionWatchdog();
   }
 
-  void signOut() {
+  void signOut({String reason = 'Signed out'}) {
     _stopPolling();
+    sessionWarning.value = null;
+    _reauthPromptShown = false;
     session.value = null;
-    status.value = 'Signed out';
+    if (_rememberSession) {
+      unawaited(_sessionStorage.clear());
+    }
+    status.value = reason;
   }
 
   void cancelPendingSignIn() {
@@ -310,9 +350,85 @@ class AuthController extends GetxController {
     status.value = 'Sign-in cancelled by user';
   }
 
+  Future<bool> _restoreSession() async {
+    if (!_rememberSession) {
+      return false;
+    }
+    final restored = await _sessionStorage.read();
+    if (restored == null) {
+      return false;
+    }
+    if (restored.isExpired) {
+      await _sessionStorage.clear();
+      session.value = null;
+      status.value = 'Stored session has expired. Please sign in again.';
+      return false;
+    }
+    session.value = restored;
+    status.value =
+        'Session restored for ${restored.displayName} via ${authProviderDisplayName(restored.provider)}';
+    return true;
+  }
+
+  void _startSessionWatchdog() {
+    _sessionWatchdog?.cancel();
+    _sessionWatchdog = Timer.periodic(
+      Duration(seconds: _sessionCheckIntervalSeconds),
+      (timer) => _evaluateSessionState(),
+    );
+    _evaluateSessionState();
+  }
+
+  void _evaluateSessionState() {
+    final activeSession = session.value;
+    if (activeSession == null) {
+      sessionWarning.value = null;
+      _reauthPromptShown = false;
+      return;
+    }
+
+    final remaining = activeSession.timeLeft;
+    if (remaining <= Duration.zero) {
+      signOut(reason: 'Session expired. Please sign in again.');
+      return;
+    }
+
+    if (remaining <= _reauthPromptBefore) {
+      final pretty = _formatDuration(remaining);
+      sessionWarning.value = 'Session expires in $pretty. Re-auth is recommended.';
+      if (!_reauthPromptShown) {
+        status.value = 'Session is close to expiration. Re-auth soon.';
+        _reauthPromptShown = true;
+      }
+      return;
+    }
+
+    sessionWarning.value = null;
+    _reauthPromptShown = false;
+  }
+
+  String _formatDuration(Duration duration) {
+    final totalMinutes = duration.inMinutes;
+    if (totalMinutes <= 0) {
+      return 'less than a minute';
+    }
+    final days = totalMinutes ~/ (24 * 60);
+    final hours = (totalMinutes % (24 * 60)) ~/ 60;
+    final minutes = totalMinutes % 60;
+
+    if (days > 0) {
+      return '${days}d ${hours}h';
+    }
+    if (hours > 0) {
+      return '${hours}h ${minutes}m';
+    }
+    return '${minutes}m';
+  }
+
   @override
   void onClose() {
     _stopPolling();
+    _sessionWatchdog?.cancel();
     super.onClose();
   }
 }

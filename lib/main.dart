@@ -58,7 +58,7 @@ class _MyAppState extends State<MyApp> {
   Future<void> initialize() async {
     status.value = 'Loading cloud configuration';
     appCloudConfig = await AppCloudConfigLoader.load();
-    authController.configure(appCloudConfig);
+    await authController.configure(appCloudConfig);
     _applyDiagnosticsCloudConfig(appCloudConfig);
     cloudStatus.value = 'Cloud backend: ${_backendLabel(appCloudConfig.backendKind)}';
 
@@ -252,13 +252,16 @@ class _MyAppState extends State<MyApp> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Center(
-        child: Obx(
-          () => Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
+      body: SafeArea(
+        child: Center(
+          child: Obx(
+            () => SingleChildScrollView(
+              padding: const EdgeInsets.all(20),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 640),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
                 Text(status.value, textAlign: TextAlign.center),
                 const SizedBox(height: 8),
                 Text(cloudStatus.value, textAlign: TextAlign.center),
@@ -269,6 +272,26 @@ class _MyAppState extends State<MyApp> {
                   Text(
                     'Signed in as: ${authController.session.value!.displayName}',
                     textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Session valid until: ${authController.session.value!.expiresAtUtc.toLocal()}',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton(
+                    onPressed: () =>
+                        authController.signOut(reason: 'Signed out by user'),
+                    child: const Text('Sign out'),
+                  ),
+                ],
+                if (authController.sessionWarning.value != null) ...<Widget>[
+                  const SizedBox(height: 6),
+                  Text(
+                    authController.sessionWarning.value!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 12),
                   ),
                 ],
                 if (authController.options.isNotEmpty) ...<Widget>[
@@ -289,7 +312,22 @@ class _MyAppState extends State<MyApp> {
                         .toList(growable: false),
                   ),
                 ],
+                if (authController.session.value == null &&
+                    !authController.isSignInPending.value) ...<Widget>[
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Onboarding: 1) Ensure local server is reachable, '
+                    '2) press Google sign-in, 3) confirm in browser.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ],
                 if (authController.isSignInPending.value) ...<Widget>[
+                  const SizedBox(height: 8),
+                  const SizedBox(
+                    width: 220,
+                    child: LinearProgressIndicator(minHeight: 3),
+                  ),
                   const SizedBox(height: 8),
                   Wrap(
                     alignment: WrapAlignment.center,
@@ -306,6 +344,14 @@ class _MyAppState extends State<MyApp> {
                       ),
                     ],
                   ),
+                  if (authController.pendingSessionId.value != null) ...<Widget>[
+                    const SizedBox(height: 6),
+                    Text(
+                      'Pending session: ${authController.pendingSessionId.value}',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                  ],
                 ],
                 if (authController.pollErrorCount.value > 0) ...<Widget>[
                   const SizedBox(height: 6),
@@ -356,7 +402,9 @@ class _MyAppState extends State<MyApp> {
                     style: const TextStyle(fontSize: 12),
                   ),
                 ],
-              ],
+                  ],
+                ),
+              ),
             ),
           ),
         ),

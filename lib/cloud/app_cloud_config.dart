@@ -79,7 +79,7 @@ class AuthProviderCloudConfig {
     final rawUrl = map['oauth_start_url']?.toString();
     return AuthProviderCloudConfig(
       provider: provider,
-      enabled: map['enabled'] as bool? ?? false,
+      enabled: _toBool(map['enabled'], false),
       displayName: (map['display_name']?.toString() ?? fallbackDisplayName).trim(),
       oauthStartUrl: (rawUrl == null || rawUrl.trim().isEmpty) ? null : rawUrl,
       notes: map['notes']?.toString(),
@@ -92,6 +92,10 @@ class AuthCloudConfig {
     required this.enabled,
     required this.providers,
     required this.deviceFlowEnabled,
+    required this.rememberSession,
+    this.sessionTtlMinutes = 43200,
+    this.reauthPromptMinutes = 1440,
+    this.sessionCheckIntervalSeconds = 30,
     this.deviceStartUrl,
     this.deviceStatusUrl,
     this.pollIntervalSeconds = 3,
@@ -101,6 +105,10 @@ class AuthCloudConfig {
   final bool enabled;
   final List<AuthProviderCloudConfig> providers;
   final bool deviceFlowEnabled;
+  final bool rememberSession;
+  final int sessionTtlMinutes;
+  final int reauthPromptMinutes;
+  final int sessionCheckIntervalSeconds;
   final String? deviceStartUrl;
   final String? deviceStatusUrl;
   final int pollIntervalSeconds;
@@ -124,9 +132,14 @@ class AuthCloudConfig {
     final rawStartUrl = map['device_start_url']?.toString();
     final rawStatusUrl = map['device_status_url']?.toString();
     return AuthCloudConfig(
-      enabled: map['enabled'] as bool? ?? false,
+      enabled: _toBool(map['enabled'], false),
       providers: parsedProviders,
-      deviceFlowEnabled: map['device_flow_enabled'] as bool? ?? false,
+      deviceFlowEnabled: _toBool(map['device_flow_enabled'], false),
+      rememberSession: _toBool(map['remember_session'], true),
+      sessionTtlMinutes: _toInt(map['session_ttl_minutes'], 43200),
+      reauthPromptMinutes: _toInt(map['reauth_prompt_minutes'], 1440),
+      sessionCheckIntervalSeconds:
+          _toInt(map['session_check_interval_seconds'], 30),
       deviceStartUrl:
           (rawStartUrl == null || rawStartUrl.trim().isEmpty) ? null : rawStartUrl,
       deviceStatusUrl:
@@ -163,8 +176,8 @@ class DiagnosticsCloudConfig {
   factory DiagnosticsCloudConfig.fromMap(Map<String, dynamic> map) {
     final rawUrl = map['upload_url']?.toString();
     return DiagnosticsCloudConfig(
-      enabled: map['enabled'] as bool? ?? false,
-      uploadWithUserConsent: map['upload_with_user_consent'] as bool? ?? false,
+      enabled: _toBool(map['enabled'], false),
+      uploadWithUserConsent: _toBool(map['upload_with_user_consent'], false),
       uploadUrl: (rawUrl == null || rawUrl.trim().isEmpty) ? null : rawUrl,
       apiKeyHeader: map['api_key_header']?.toString(),
       apiKeyValue: map['api_key_value']?.toString(),
@@ -212,11 +225,11 @@ class AdsCloudConfig {
 
   factory AdsCloudConfig.fromMap(Map<String, dynamic> map) {
     return AdsCloudConfig(
-      enabled: map['enabled'] as bool? ?? false,
+      enabled: _toBool(map['enabled'], false),
       provider: adsProviderKindFromString(
         map['provider']?.toString() ?? 'disabled',
       ),
-      nonPersonalizedOnly: map['non_personalized_only'] as bool? ?? true,
+      nonPersonalizedOnly: _toBool(map['non_personalized_only'], true),
       bannerUnitId: map['banner_unit_id']?.toString(),
       interstitialUnitId: map['interstitial_unit_id']?.toString(),
       rewardedUnitId: map['rewarded_unit_id']?.toString(),
@@ -243,9 +256,9 @@ class AnonymousAnalyticsCloudConfig {
   factory AnonymousAnalyticsCloudConfig.fromMap(Map<String, dynamic> map) {
     final rawUrl = map['endpoint_url']?.toString();
     return AnonymousAnalyticsCloudConfig(
-      enabled: map['enabled'] as bool? ?? false,
-      collectUsageEvents: map['collect_usage_events'] as bool? ?? true,
-      collectCrashSignals: map['collect_crash_signals'] as bool? ?? true,
+      enabled: _toBool(map['enabled'], false),
+      collectUsageEvents: _toBool(map['collect_usage_events'], true),
+      collectCrashSignals: _toBool(map['collect_crash_signals'], true),
       sampleRatePercent:
           _toInt(map['sample_rate_percent'], 20).clamp(1, 100).toInt(),
       endpointUrl: (rawUrl == null || rawUrl.trim().isEmpty) ? null : rawUrl,
@@ -301,6 +314,7 @@ class AppCloudConfig {
         enabled: false,
         providers: <AuthProviderCloudConfig>[],
         deviceFlowEnabled: false,
+        rememberSession: true,
       ),
       diagnostics: DiagnosticsCloudConfig(
         enabled: false,
@@ -348,6 +362,25 @@ int _toInt(dynamic rawValue, int defaultValue) {
   }
   if (rawValue is String) {
     return int.tryParse(rawValue) ?? defaultValue;
+  }
+  return defaultValue;
+}
+
+bool _toBool(dynamic rawValue, bool defaultValue) {
+  if (rawValue is bool) {
+    return rawValue;
+  }
+  if (rawValue is num) {
+    return rawValue != 0;
+  }
+  if (rawValue is String) {
+    final normalized = rawValue.trim().toLowerCase();
+    if (normalized == 'true' || normalized == '1' || normalized == 'yes') {
+      return true;
+    }
+    if (normalized == 'false' || normalized == '0' || normalized == 'no') {
+      return false;
+    }
   }
   return defaultValue;
 }

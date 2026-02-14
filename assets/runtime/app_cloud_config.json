@@ -3,6 +3,10 @@
   "auth": {
     "enabled": true,
     "device_flow_enabled": true,
+    "remember_session": true,
+    "session_ttl_minutes": 43200,
+    "reauth_prompt_minutes": 1440,
+    "session_check_interval_seconds": 30,
     "device_start_url": "http://backlight.local/auth/device/start",
     "device_status_url": "http://backlight.local/auth/device/status",
     "poll_interval_seconds": 3,
