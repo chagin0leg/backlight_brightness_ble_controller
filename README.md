@@ -2,6 +2,16 @@
 
 A Flutter pet-project for control BLE LED-strip from dependencies of desktop display backlight level
 
+## Headless Arch quick launch
+
+```bash
+sudo bash deploy/launch_product.sh
+```
+
+After launch, open local console from LAN:
+
+- `http://backlight.local` (or your configured `LOCAL_DASHBOARD_NAME`)
+
 ## Product roadmap
 
 The current product roadmap and implementation checklist are tracked in:

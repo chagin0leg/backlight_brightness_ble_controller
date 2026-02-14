@@ -37,6 +37,7 @@ If a low-power Arch Linux server is available (2 cores / 16 GB RAM) but without 
   - SQLite for small metadata (if needed)
 - Keep auth verification and webhooks stateless where possible.
 - Offload heavy jobs (if any) to serverless endpoints.
+- Serve setup/dashboard UI on LAN-only mDNS hostname (`http://<name>.local`).
 
 ## Recommended architecture
 
@@ -74,6 +75,7 @@ Use a free-tier identity platform or a tunnel-backed lightweight gateway:
 ### Google and Microsoft
 
 - Supported via regular OAuth2/OIDC on most BaaS providers.
+- For headless mode, Google device-session polling flow is recommended.
 
 ### Yandex
 

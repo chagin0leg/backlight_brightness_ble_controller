@@ -1,4 +1,4 @@
-# Minimal Gateway API (Self-Hosted)
+# Headless Gateway API (Self-Hosted)
 
 This gateway is implemented in `deploy/gateway/app.py` and is designed for low-resource deployments.
 
@@ -8,8 +8,25 @@ This gateway is implemented in `deploy/gateway/app.py` and is designed for low-r
 - PII-like keys are redacted from diagnostics payloads before persistence.
 - OAuth callback endpoint avoids logging query secrets.
 - Telegram verification returns hashed subject, not raw Telegram profile data.
+- Local web console endpoints are restricted to local-network clients.
 
 ## Endpoints
+
+## `GET /ui`
+
+Local web console for headless setup and product dashboard.
+
+Access policy:
+- allowed only from local/private/link-local/loopback networks
+- expected local URL: `http://<name>.local`
+
+## `GET /ui/api/status`
+
+Returns setup checklist, runtime status, and auth/diagnostics metrics.
+
+## `POST /ui/api/config/google`
+
+Updates runtime Google config and dashboard local-name settings.
 
 ## `GET /health`
 
@@ -68,6 +85,22 @@ Returns status of device auth session:
 - `failed`
 - `expired`
 
+## `GET /auth/google/start`
+
+Starts Google OAuth flow.
+
+Query params:
+- `state` (optional, if omitted generated automatically)
+- `mode=json` (optional; returns auth URL JSON instead of redirect)
+
+## `GET /auth/google/callback`
+
+Handles Google OAuth callback:
+- exchanges authorization code
+- verifies ID token (`tokeninfo`)
+- maps user to anonymous hashed subject
+- updates device session when `state` is present
+
 ## `POST /auth/telegram/verify`
 
 Accepts Telegram Login Widget payload JSON and validates hash using `TELEGRAM_BOT_TOKEN`.
@@ -113,3 +146,12 @@ Useful as a lightweight profile update source for app clients.
 - `DIAGNOSTICS_INGEST_API_KEY` (optional)
 - `APP_REDIRECT_BASE` (optional hint for auth callback redirect)
 - `AUTH_DEVICE_SESSION_TTL_SEC` (default `300`)
+- `LOCAL_DASHBOARD_NAME` (default `backlight`)
+- `GOOGLE_AUTH_ENABLED`
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `GOOGLE_REDIRECT_URI`
+- `GOOGLE_SCOPE` (default `openid email profile`)
+- `GOOGLE_PROMPT` (default `consent`)
+- `GOOGLE_ALLOWED_DOMAIN` (optional)
+- `GOOGLE_REQUIRE_VERIFIED_EMAIL` (default `true`)

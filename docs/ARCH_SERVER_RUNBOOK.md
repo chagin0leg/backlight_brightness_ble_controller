@@ -13,6 +13,7 @@ Use outbound tunnel-first networking:
 - App users -> public hostname -> tunnel edge -> Arch server
 - No inbound port forwarding required
 - Preferred: Cloudflare Tunnel
+- Local control UI is served via mDNS hostname: `http://<name>.local`
 
 ## 2. Minimum service set
 
@@ -56,6 +57,7 @@ The repository includes ready templates:
 
 - `deploy/docker-compose.yml`
 - `deploy/.env.example`
+- `deploy/launch_product.sh`
 - `deploy/caddy/Caddyfile`
 - `deploy/cloudflared/config.yml`
 - `deploy/systemd/backlight-stack.service`
@@ -69,7 +71,7 @@ The repository includes ready templates:
 From repository root on server:
 
 ```bash
-sudo bash deploy/install_arch_one_click.sh
+sudo bash deploy/launch_product.sh
 ```
 
 What it does:
@@ -77,20 +79,24 @@ What it does:
 - copies deploy templates to `/opt/backlight-stack/deploy`
 - installs systemd units
 - starts `backlight-stack.service`
+- configures mDNS hostname for `.local` access
+- exposes web console for all next setup actions
 
 Optional flags:
 - `INSTALL_CLOUDFLARED=1` (default)
 - `ENABLE_CLOUDFLARED_SERVICE=1` (disabled by default)
 - `ENABLE_HIL_SERVICE=1` (disabled by default)
 - `TARGET_ROOT=/opt/backlight-stack` (default)
+- `APPLY_MDNS_HOSTNAME=1` (default)
 
 ### Manual install (advanced)
 
 1. Install base packages:
 
 ```bash
-sudo pacman -Syu --noconfirm docker docker-compose cloudflared
+sudo pacman -Syu --noconfirm docker docker-compose cloudflared avahi nss-mdns
 sudo systemctl enable --now docker
+sudo systemctl enable --now avahi-daemon
 ```
 
 2. Copy project to server (example path):
@@ -110,6 +116,7 @@ Set at least:
 - `AUTH_SUBJECT_SALT`
 - `TELEGRAM_BOT_TOKEN` (if Telegram is used)
 - optional `DIAGNOSTICS_INGEST_API_KEY`
+- and Google values if using Google auth
 
 4. Start stack via systemd:
 
@@ -133,8 +140,15 @@ sudo systemctl enable --now backlight-cloudflared.service
 ## 9. Gateway endpoint summary
 
 - `GET /health` - service health
+- `GET /ui` - local web console (local network only)
+- `GET /ui/api/status` - dashboard status data
+- `POST /ui/api/config/google` - update Google/dashboard config from UI
+- `GET /auth/google/start` - start Google OAuth
+- `GET /auth/google/callback` - Google callback endpoint
 - `GET /auth/callback` - OAuth callback relay (code is not logged)
 - `GET /auth/ticket?ticket=...` - short-lived callback ticket fetch
+- `POST /auth/device/start` - start device auth session
+- `GET /auth/device/status?session_id=...` - poll device auth status
 - `POST /auth/telegram/verify` - Telegram hash verification
 - `POST /diagnostics/ingest` - anonymous diagnostics ingest (PII keys redacted)
 - `GET /profiles/manifest` - optional profile manifest from local storage

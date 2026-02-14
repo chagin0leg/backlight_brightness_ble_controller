@@ -24,13 +24,19 @@ This document is a plain status snapshot of what is already implemented versus w
 - Remote profile manifest loading path exists.
 - Auth provider model and UI hooks are implemented.
 - Guest mode auth session shortcut is implemented.
+- Device auth polling loop is implemented in client auth controller.
 
 ## Self-hosted backend templates
 
 - Minimal Python gateway implemented:
   - `/health`
+  - `/ui`
+  - `/ui/api/status`
+  - `/ui/api/config/google`
   - `/auth/device/start`
   - `/auth/device/status`
+  - `/auth/google/start`
+  - `/auth/google/callback`
   - `/auth/callback`
   - `/auth/ticket`
   - `/auth/telegram/verify`
@@ -47,7 +53,7 @@ This document is a plain status snapshot of what is already implemented versus w
 ## What is not yet production-ready
 
 - Cross-platform brightness providers are mostly stubs outside Windows.
-- Multi-provider auth is scaffold-level (no full OAuth token exchange flow in app yet).
+- Google OAuth backend flow is implemented, but multi-provider production hardening is still pending.
 - UI is still minimal status-driven; no polished product UX yet.
 - No finalized ad SDK integration yet.
 - No persistent user settings/profile preference storage yet.

@@ -74,6 +74,8 @@ This document captures the agreed scope for turning the project into a productio
 
 - [x] Add cloud configuration model for no-dedicated-server deployments.
 - [x] Add authentication provider abstraction and UI hooks.
+- [x] Add device auth session flow (start + polling status).
+- [x] Implement Google OAuth callback exchange and token verification on backend.
 - [ ] Wire provider entries for:
   - [x] Google
   - [x] Microsoft
@@ -97,6 +99,9 @@ This document captures the agreed scope for turning the project into a productio
 - [x] Expose stable OAuth callback URL behind tunnel hostname.
 - [x] Add health checks and watchdog restart policy.
 - [x] Keep server role minimal: auth callback, diagnostics ingest, manifest proxy.
+- [x] Add local-only headless web console (`*.local`) for setup/actions/status dashboard.
+- [x] Add one-button launch script for headless deployment.
+- [x] Add HIL sidecar templates for same Arch host.
 
 ## Phase 4: Cross-platform implementation matrix
 

@@ -3,8 +3,8 @@
   "auth": {
     "enabled": true,
     "device_flow_enabled": true,
-    "device_start_url": "",
-    "device_status_url": "",
+    "device_start_url": "http://backlight.local/auth/device/start",
+    "device_status_url": "http://backlight.local/auth/device/status",
     "poll_interval_seconds": 3,
     "session_timeout_seconds": 240,
     "providers": [

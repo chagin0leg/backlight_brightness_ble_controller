@@ -1,4 +1,4 @@
-:80 {
+{$LOCAL_DASHBOARD_NAME:backlight}.local {
   encode zstd gzip
 
   header {
@@ -8,4 +8,15 @@
   }
 
   reverse_proxy gateway:8080
+}
+
+:80 {
+  encode zstd gzip
+
+  @api path /health /auth/* /diagnostics/* /profiles/*
+  handle @api {
+    reverse_proxy gateway:8080
+  }
+
+  respond "Backlight console is available at http://{$LOCAL_DASHBOARD_NAME:backlight}.local" 404
 }
