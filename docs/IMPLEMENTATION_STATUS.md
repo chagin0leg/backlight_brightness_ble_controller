@@ -55,6 +55,7 @@ This document is a plain status snapshot of what is already implemented versus w
   - `/profiles/manifest`
 - Local dashboard now shows current temporary public URL (trycloudflare) and exact Google redirect hint.
 - Local dashboard can auto-follow temporary public URL for Google redirect URI and provides one-click copy button.
+- Telegram device auth flow is implemented via bot deep-link + one-time code polling (works with changing public URL).
 - Deploy templates included:
   - Docker Compose
   - Caddy config

@@ -393,7 +393,8 @@ class _MyAppState extends State<MyApp> {
         const SizedBox(height: 8),
         const Text(
           'Onboarding: 1) Ensure local server is reachable, '
-          '2) press Google sign-in, 3) confirm in browser.',
+          '2) press preferred sign-in provider (Google/Telegram), '
+          '3) confirm in browser.',
           textAlign: TextAlign.center,
           style: TextStyle(fontSize: 12),
         ),

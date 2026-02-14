@@ -37,6 +37,7 @@ DATA_DIR = pathlib.Path(os.getenv("DATA_DIR", "/data"))
 MAX_BODY_BYTES = int(os.getenv("MAX_BODY_BYTES", "1048576"))
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@")
 SUBJECT_SALT = os.getenv("AUTH_SUBJECT_SALT", "change-me").strip()
 DIAGNOSTICS_API_KEY = os.getenv("DIAGNOSTICS_INGEST_API_KEY", "").strip()
 APP_REDIRECT_BASE = os.getenv("APP_REDIRECT_BASE", "").strip()
@@ -58,6 +59,9 @@ _device_session_store_lock = threading.Lock()
 _device_session_store: dict[str, dict[str, object]] = {}
 _runtime_config_lock = threading.Lock()
 _runtime_config_cache: dict[str, object] | None = None
+_telegram_updates_lock = threading.Lock()
+_telegram_update_offset = 0
+_telegram_last_poll_unix = 0
 
 PII_KEYS = {
     "email",
@@ -85,6 +89,7 @@ TRYCLOUDFLARE_URL_RE = re.compile(
     r"https://[a-z0-9-]+\.trycloudflare\.com",
     re.IGNORECASE,
 )
+TELEGRAM_LOGIN_CODE_RE = re.compile(r"^[A-Z0-9]{6,32}$")
 
 
 def utc_now_iso() -> str:
@@ -126,6 +131,14 @@ def _default_runtime_config() -> dict[str, object]:
         if google_enabled_env.strip()
         else bool(google_client_id and google_client_secret and google_redirect_uri)
     )
+    telegram_bot_token = TELEGRAM_BOT_TOKEN
+    telegram_bot_username = TELEGRAM_BOT_USERNAME
+    telegram_enabled_env = os.getenv("TELEGRAM_AUTH_ENABLED", "")
+    telegram_enabled = (
+        _parse_bool(telegram_enabled_env, False)
+        if telegram_enabled_env.strip()
+        else bool(telegram_bot_token and telegram_bot_username)
+    )
     return {
         "dashboard_local_name": LOCAL_DASHBOARD_NAME,
         "google_enabled": google_enabled,
@@ -144,6 +157,9 @@ def _default_runtime_config() -> dict[str, object]:
             os.getenv("GOOGLE_REQUIRE_VERIFIED_EMAIL", "1"),
             True,
         ),
+        "telegram_enabled": telegram_enabled,
+        "telegram_bot_username": telegram_bot_username,
+        "telegram_bot_token": telegram_bot_token,
     }
 
 
@@ -179,6 +195,9 @@ def _update_runtime_config(patch: dict[str, object]) -> dict[str, object]:
         "google_prompt",
         "google_allowed_domain",
         "google_require_verified_email",
+        "telegram_enabled",
+        "telegram_bot_username",
+        "telegram_bot_token",
     }
     sanitized_patch: dict[str, object] = {}
     for key, value in patch.items():
@@ -192,17 +211,23 @@ def _update_runtime_config(patch: dict[str, object]) -> dict[str, object]:
             "google_scope",
             "google_prompt",
             "google_allowed_domain",
+            "telegram_bot_username",
+            "telegram_bot_token",
         }:
             text = str(value).strip()[:4096]
             if key == "dashboard_local_name":
                 text = "".join(ch for ch in text.lower() if ch.isalnum() or ch == "-")
                 text = text.strip("-") or LOCAL_DASHBOARD_NAME
+            if key == "telegram_bot_username":
+                text = text.lstrip("@")
+                text = "".join(ch for ch in text if ch.isalnum() or ch == "_")
             sanitized_patch[key] = text
             continue
         if key in {
             "google_enabled",
             "google_require_verified_email",
             "google_auto_redirect_from_public_url",
+            "telegram_enabled",
         }:
             sanitized_patch[key] = _parse_bool(value, False)
 
@@ -354,6 +379,22 @@ def _google_settings() -> dict[str, object]:
     }
 
 
+def _telegram_settings() -> dict[str, object]:
+    cfg = _get_runtime_config()
+    username = str(cfg.get("telegram_bot_username", "")).strip().lstrip("@")
+    token = str(cfg.get("telegram_bot_token", "")).strip()
+    return {
+        "enabled": _parse_bool(cfg.get("telegram_enabled", False), False),
+        "bot_username": username,
+        "bot_token": token,
+    }
+
+
+def _telegram_config_ready(settings: dict[str, object] | None = None) -> bool:
+    cfg = settings if settings is not None else _telegram_settings()
+    return bool(cfg["enabled"] and cfg["bot_username"] and cfg["bot_token"])
+
+
 def _google_config_ready() -> bool:
     g = _google_settings()
     return bool(
@@ -387,6 +428,131 @@ def _quick_tunnel_public_base_url() -> str:
 
 def _normalize_redirect_uri(raw: str) -> str:
     return raw.strip().rstrip("/")
+
+
+def _telegram_login_code_from_text(text: str) -> str:
+    raw = text.strip()
+    if not raw:
+        return ""
+    payload = raw
+    if raw.startswith("/start"):
+        parts = raw.split(maxsplit=1)
+        payload = parts[1].strip() if len(parts) > 1 else ""
+    if payload.lower().startswith("login_"):
+        payload = payload[6:]
+    code = payload.strip().upper()
+    if TELEGRAM_LOGIN_CODE_RE.fullmatch(code):
+        return code
+    return ""
+
+
+def _new_telegram_login_code() -> str:
+    return uuid.uuid4().hex[:8].upper()
+
+
+def _telegram_bot_link(bot_username: str, login_code: str) -> str:
+    safe_username = bot_username.strip().lstrip("@")
+    return f"https://t.me/{safe_username}?start=login_{login_code}"
+
+
+def _apply_telegram_login_code(login_code: str, raw_user_id: str) -> bool:
+    target_session_id = ""
+    with _device_session_store_lock:
+        now_unix = int(time.time())
+        for session_id, record in _device_session_store.items():
+            if str(record.get("provider", "")).strip().lower() != "telegram":
+                continue
+            if str(record.get("status", "")) != "pending":
+                continue
+            if int(record.get("expires_at_unix", 0)) < now_unix:
+                continue
+            expected_code = str(record.get("telegram_login_code", "")).strip().upper()
+            if expected_code != login_code:
+                continue
+            target_session_id = session_id
+            break
+    if not target_session_id:
+        return False
+    subject = hash_subject("telegram", raw_user_id)
+    return _update_device_session_from_event(
+        session_id=target_session_id,
+        provider="telegram",
+        ok=True,
+        error=None,
+        subject=subject,
+    )
+
+
+def _poll_telegram_login_updates() -> tuple[bool, str, int]:
+    settings = _telegram_settings()
+    if not _telegram_config_ready(settings):
+        return False, "Telegram auth is not configured yet", 0
+
+    global _telegram_last_poll_unix
+    global _telegram_update_offset
+    with _telegram_updates_lock:
+        now_unix = int(time.time())
+        # Do not hammer Telegram API while client polls status.
+        if now_unix - _telegram_last_poll_unix < 2:
+            return True, "skip", 0
+        _telegram_last_poll_unix = now_unix
+        offset = _telegram_update_offset
+
+    body = urlencode(
+        {
+            "offset": offset,
+            "timeout": 0,
+            "allowed_updates": json.dumps(["message"]),
+        }
+    ).encode("utf-8")
+    status, payload, raw = _json_request(
+        url=f"https://api.telegram.org/bot{settings['bot_token']}/getUpdates",
+        method="POST",
+        payload=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        timeout=10,
+    )
+    if status < 200 or status >= 300 or payload is None:
+        return False, f"Telegram getUpdates failed: {status} {raw}", 0
+    if not bool(payload.get("ok")):
+        return False, f"Telegram getUpdates error: {raw}", 0
+
+    updates = payload.get("result")
+    if not isinstance(updates, list):
+        return True, "ok", 0
+
+    max_update_id = offset - 1
+    matched = 0
+    for update in updates:
+        if not isinstance(update, dict):
+            continue
+        try:
+            update_id = int(update.get("update_id", 0))
+        except Exception:
+            update_id = 0
+        if update_id > max_update_id:
+            max_update_id = update_id
+
+        message = update.get("message")
+        if not isinstance(message, dict):
+            continue
+        text = str(message.get("text", ""))
+        login_code = _telegram_login_code_from_text(text)
+        if not login_code:
+            continue
+        sender = message.get("from")
+        if not isinstance(sender, dict):
+            continue
+        raw_user_id = str(sender.get("id", "")).strip()
+        if not raw_user_id:
+            continue
+        if _apply_telegram_login_code(login_code, raw_user_id):
+            matched += 1
+
+    with _telegram_updates_lock:
+        if max_update_id >= _telegram_update_offset:
+            _telegram_update_offset = max_update_id + 1
+    return True, "ok", matched
 
 
 def _google_redirect_hint_from_public_url(public_base_url: str) -> str:
@@ -548,11 +714,25 @@ def _start_device_session(provider: str, external_auth_url: str | None) -> tuple
     created_at_unix = int(time.time())
     expires_at_unix = created_at_unix + AUTH_DEVICE_SESSION_TTL_SEC
     normalized_provider = (provider or "unknown").strip().lower()
+    telegram_login_code = ""
+    telegram_bot_link = ""
+    telegram_bot_username = ""
 
     if normalized_provider == "google":
         if not _google_config_ready():
             return False, "Google auth is not configured yet", None
         auth_url = _with_query("/auth/google/start", {"state": session_id})
+    elif normalized_provider == "telegram":
+        telegram = _telegram_settings()
+        if not _telegram_config_ready(telegram):
+            return False, "Telegram auth is not configured yet", None
+        telegram_login_code = _new_telegram_login_code()
+        telegram_bot_username = str(telegram["bot_username"]).strip()
+        telegram_bot_link = _telegram_bot_link(
+            bot_username=telegram_bot_username,
+            login_code=telegram_login_code,
+        )
+        auth_url = _with_query("/auth/telegram/start", {"state": session_id})
     elif external_auth_url and external_auth_url.strip():
         auth_url = _with_query(
             external_auth_url.strip(),
@@ -575,6 +755,9 @@ def _start_device_session(provider: str, external_auth_url: str | None) -> tuple
         "subject": "",
         "error": "",
         "updated_at_utc": utc_now_iso(),
+        "telegram_login_code": telegram_login_code,
+        "telegram_bot_link": telegram_bot_link,
+        "telegram_bot_username": telegram_bot_username if normalized_provider == "telegram" else "",
     }
     with _device_session_store_lock:
         _device_session_store[session_id] = record
@@ -619,6 +802,8 @@ def _update_device_session_from_event(
         record["subject"] = subject
         record["error"] = error or ""
         record["updated_at_utc"] = utc_now_iso()
+        if ok:
+            record["telegram_login_code"] = ""
         return True
 
 
@@ -626,7 +811,9 @@ def _verify_telegram_payload(payload: dict) -> tuple[bool, str]:
     incoming_hash = payload.get("hash")
     if not isinstance(incoming_hash, str) or not incoming_hash:
         return False, "Missing hash field"
-    if not TELEGRAM_BOT_TOKEN:
+    telegram = _telegram_settings()
+    token = str(telegram.get("bot_token", "")).strip()
+    if not token:
         return False, "Server TELEGRAM_BOT_TOKEN is not configured"
 
     auth_date_raw = payload.get("auth_date")
@@ -652,7 +839,7 @@ def _verify_telegram_payload(payload: dict) -> tuple[bool, str]:
         pairs.append(f"{key}={val}")
     check_string = "\n".join(pairs)
 
-    secret_key = hashlib.sha256(TELEGRAM_BOT_TOKEN.encode("utf-8")).digest()
+    secret_key = hashlib.sha256(token.encode("utf-8")).digest()
     computed = hmac.new(secret_key, check_string.encode("utf-8"), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(computed, incoming_hash):
         return False, "Invalid Telegram hash"
@@ -688,6 +875,9 @@ def _device_session_stats() -> dict[str, int]:
 def _dashboard_status_payload() -> dict[str, object]:
     runtime = _get_runtime_config()
     google = _google_settings()
+    telegram = _telegram_settings()
+    if bool(telegram["enabled"]):
+        _poll_telegram_login_updates()
     device_stats = _device_session_stats()
     uptime_sec = int(time.time()) - STARTED_AT_UNIX
     local_name = str(runtime.get("dashboard_local_name", LOCAL_DASHBOARD_NAME)).strip() or LOCAL_DASHBOARD_NAME
@@ -695,6 +885,8 @@ def _dashboard_status_payload() -> dict[str, object]:
     google_redirect_hint = _google_redirect_hint_from_public_url(public_base_url)
     current_google_redirect = str(google["redirect_uri"]).strip()
     auto_redirect_enabled = bool(google["auto_redirect_from_public_url"])
+    telegram_ready = _telegram_config_ready(telegram)
+    telegram_bot_username = str(telegram["bot_username"])
     google_redirect_matches_hint = bool(
         google_redirect_hint
         and _normalize_redirect_uri(current_google_redirect)
@@ -745,6 +937,24 @@ def _dashboard_status_payload() -> dict[str, object]:
             "details": "Enable Google flow after filling all credentials",
         },
         {
+            "id": "telegram-bot-username",
+            "title": "Telegram bot username is set",
+            "done": bool(telegram_bot_username),
+            "details": "Set bot username (without @) in local dashboard config",
+        },
+        {
+            "id": "telegram-bot-token",
+            "title": "Telegram bot token is set",
+            "done": bool(telegram["bot_token"]),
+            "details": "Set bot token from BotFather in local dashboard config",
+        },
+        {
+            "id": "telegram-enabled",
+            "title": "Telegram auth is enabled",
+            "done": bool(telegram["enabled"]),
+            "details": "Enable Telegram auth in local dashboard config",
+        },
+        {
             "id": "google-auto-redirect",
             "title": "Google redirect follows current public URL automatically",
             "done": auto_redirect_enabled,
@@ -781,7 +991,11 @@ def _dashboard_status_payload() -> dict[str, object]:
             "device_sessions": device_stats,
             "google_configured": google_ready,
             "google_enabled": bool(google["enabled"]),
+            "telegram_configured": telegram_ready,
+            "telegram_enabled": bool(telegram["enabled"]),
+            "telegram_bot_username": telegram_bot_username,
             "google_start_endpoint": "/auth/google/start",
+            "telegram_start_endpoint": "/auth/telegram/start",
             "google_callback_endpoint": "/auth/google/callback",
             "public_base_url": public_base_url,
             "google_redirect_hint": google_redirect_hint,
@@ -799,6 +1013,9 @@ def _dashboard_status_payload() -> dict[str, object]:
             "google_allowed_domain": str(google["allowed_domain"]),
             "google_require_verified_email": bool(google["require_verified_email"]),
             "google_client_secret_configured": bool(google["client_secret"]),
+            "telegram_enabled": bool(telegram["enabled"]),
+            "telegram_bot_username": telegram_bot_username,
+            "telegram_bot_token_configured": bool(telegram["bot_token"]),
             "public_base_url": public_base_url,
             "google_redirect_hint": google_redirect_hint,
             "google_redirect_matches_hint": google_redirect_matches_hint,
@@ -809,6 +1026,11 @@ def _dashboard_status_payload() -> dict[str, object]:
             "Run: sudo systemctl restart backlight-stack.service (apply env/hostname changes)",
             "Run: sudo systemctl enable --now backlight-hil.service (optional HIL mode)",
             "Use /auth/google/start to test Google login",
+            (
+                f"Use Telegram bot link: https://t.me/{telegram_bot_username}"
+                if telegram_bot_username
+                else "Set Telegram bot username in dashboard to enable Telegram auth flow"
+            ),
             "Use /health for probe checks",
             (
                 f"Update Google OAuth Redirect URI to: {google_redirect_hint}"
@@ -864,8 +1086,8 @@ def _render_dashboard_html() -> str:
     </div>
 
     <div class="card">
-      <h2>Google auth config</h2>
-      <p class="muted">All required setup actions are available here. Save config, then test Google flow.</p>
+      <h2>Auth config (Google + Telegram)</h2>
+      <p class="muted">All required setup actions are available here. Save config, then test auth flows.</p>
       <div id="publicUrlHint" class="muted" style="margin-bottom: 10px;"></div>
       <div class="grid">
         <div>
@@ -877,7 +1099,7 @@ def _render_dashboard_html() -> str:
           <input id="googleClientId" type="text" />
         </div>
         <div>
-          <label>Google Client Secret</label>
+          <label>Google Client Secret (leave empty to keep current)</label>
           <input id="googleClientSecret" type="password" />
         </div>
         <div>
@@ -904,6 +1126,18 @@ def _render_dashboard_html() -> str:
           <label>Auto-update Redirect URI from current public URL (true/false)</label>
           <input id="googleAutoRedirect" type="text" />
         </div>
+        <div>
+          <label>Telegram enabled (true/false)</label>
+          <input id="telegramEnabled" type="text" />
+        </div>
+        <div>
+          <label>Telegram bot username (without @)</label>
+          <input id="telegramBotUsername" type="text" />
+        </div>
+        <div>
+          <label>Telegram bot token (leave empty to keep current)</label>
+          <input id="telegramBotToken" type="password" />
+        </div>
       </div>
       <div style="margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
         <button id="saveBtn" type="button">Save config</button>
@@ -922,6 +1156,7 @@ def _render_dashboard_html() -> str:
         <li><span class="mono">GET /auth/device/status?session_id=...</span></li>
         <li><span class="mono">GET /auth/google/start</span></li>
         <li><span class="mono">GET /auth/google/callback</span></li>
+        <li><span class="mono">GET /auth/telegram/start?state=...</span></li>
         <li><span class="mono">POST /diagnostics/ingest</span></li>
       </ul>
     </div>
@@ -962,6 +1197,9 @@ def _render_dashboard_html() -> str:
         `device_sessions.completed=${(auth.device_sessions || {}).completed || 0}`,
         `google.configured=${auth.google_configured}`,
         `google.enabled=${auth.google_enabled}`,
+        `telegram.configured=${auth.telegram_configured}`,
+        `telegram.enabled=${auth.telegram_enabled}`,
+        `telegram.bot=@${auth.telegram_bot_username || '-'}`,
         `public.base_url=${auth.public_base_url || '-'}`,
         `google.redirect_hint=${auth.google_redirect_hint || '-'}`,
         `diagnostics.count=${svc.diagnostics_count || 0}`,
@@ -980,6 +1218,9 @@ def _render_dashboard_html() -> str:
       document.getElementById('googleAllowedDomain').value = cfg.google_allowed_domain || '';
       document.getElementById('googleEnabled').value = String(cfg.google_enabled || false);
       document.getElementById('googleAutoRedirect').value = String(cfg.google_auto_redirect_from_public_url !== false);
+      document.getElementById('telegramEnabled').value = String(cfg.telegram_enabled || false);
+      document.getElementById('telegramBotUsername').value = cfg.telegram_bot_username || '';
+      document.getElementById('telegramBotToken').value = '';
       document.getElementById('googleStartLink').href = '/auth/google/start';
 
       const hintEl = document.getElementById('publicUrlHint');
@@ -1046,14 +1287,23 @@ def _render_dashboard_html() -> str:
       const payload = {
         dashboard_local_name: document.getElementById('dashboardLocalName').value,
         google_client_id: document.getElementById('googleClientId').value,
-        google_client_secret: document.getElementById('googleClientSecret').value,
         google_redirect_uri: document.getElementById('googleRedirectUri').value,
         google_scope: document.getElementById('googleScope').value,
         google_prompt: document.getElementById('googlePrompt').value,
         google_allowed_domain: document.getElementById('googleAllowedDomain').value,
         google_enabled: (document.getElementById('googleEnabled').value || '').toLowerCase() === 'true',
         google_auto_redirect_from_public_url: (document.getElementById('googleAutoRedirect').value || '').toLowerCase() === 'true',
+        telegram_enabled: (document.getElementById('telegramEnabled').value || '').toLowerCase() === 'true',
+        telegram_bot_username: document.getElementById('telegramBotUsername').value,
       };
+      const googleSecret = (document.getElementById('googleClientSecret').value || '').trim();
+      if (googleSecret) {
+        payload.google_client_secret = googleSecret;
+      }
+      const telegramToken = (document.getElementById('telegramBotToken').value || '').trim();
+      if (telegramToken) {
+        payload.telegram_bot_token = telegramToken;
+      }
       const r = await fetch('/ui/api/config/google', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1071,6 +1321,78 @@ def _render_dashboard_html() -> str:
     document.getElementById('copyRedirectBtn').addEventListener('click', () => { copyCurrentRedirectHint().catch(console.error); });
     refresh().catch(console.error);
     setInterval(() => refresh().catch(console.error), 5000);
+  </script>
+</body>
+</html>
+"""
+
+
+def _render_telegram_start_html(
+    *,
+    session_id: str,
+    bot_username: str,
+    bot_link: str,
+    login_code: str,
+) -> str:
+    safe_session = session_id[:64]
+    safe_username = bot_username[:64]
+    safe_link = bot_link[:2048]
+    safe_code = login_code[:64]
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Telegram login</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 0; background: #111827; color: #e5e7eb; }}
+    .wrap {{ max-width: 720px; margin: 0 auto; padding: 20px; }}
+    .card {{ background: #1f2937; border: 1px solid #374151; border-radius: 10px; padding: 16px; margin-bottom: 14px; }}
+    .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }}
+    .ok {{ color: #34d399; }}
+    .warn {{ color: #fbbf24; }}
+    .bad {{ color: #f87171; }}
+    a.button {{ display:inline-block; padding:10px 14px; border-radius:8px; background:#2563eb; color:white; text-decoration:none; }}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h2>Telegram sign-in</h2>
+      <p>Session: <span class="mono">{safe_session}</span></p>
+      <p>Bot: <span class="mono">@{safe_username}</span></p>
+      <p>One-time login code: <span class="mono">{safe_code}</span></p>
+      <p>Open bot and press Start (or send /start login_{safe_code}).</p>
+      <p><a class="button" href="{safe_link}" target="_blank" rel="noopener">Open Telegram bot</a></p>
+      <p id="status" class="warn">Waiting for Telegram confirmation...</p>
+    </div>
+  </div>
+  <script>
+    async function poll() {{
+      try {{
+        const r = await fetch('/auth/device/status?session_id={safe_session}', {{ cache: 'no-store' }});
+        if (!r.ok) {{
+          document.getElementById('status').textContent = 'Status request failed: ' + r.status;
+          return;
+        }}
+        const data = await r.json();
+        const status = (data.status || '').toLowerCase();
+        if (status === 'completed') {{
+          document.getElementById('status').innerHTML = '<span class="ok">Success. You can return to the app.</span>';
+          return;
+        }}
+        if (status === 'failed' || status === 'expired') {{
+          document.getElementById('status').innerHTML = '<span class="bad">Sign-in failed: ' + (data.error || status) + '</span>';
+          return;
+        }}
+        document.getElementById('status').innerHTML = '<span class="warn">Waiting for Telegram confirmation...</span>';
+        setTimeout(poll, 2500);
+      }} catch (e) {{
+        document.getElementById('status').textContent = 'Status error: ' + e;
+        setTimeout(poll, 3000);
+      }}
+    }}
+    poll();
   </script>
 </body>
 </html>
@@ -1334,6 +1656,67 @@ class GatewayHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/auth/telegram/start":
+            state = str(query.get("state", [""])[0]).strip()
+            if not state:
+                self._html_response(
+                    HTTPStatus.BAD_REQUEST,
+                    "<h1>Telegram auth session id is required</h1><p>Missing state query parameter.</p>",
+                )
+                return
+
+            _poll_telegram_login_updates()
+            session_record = _get_device_session(state)
+            if session_record is None:
+                self._html_response(
+                    HTTPStatus.NOT_FOUND,
+                    "<h1>Session not found</h1><p>Telegram auth session was not found or has expired.</p>",
+                )
+                return
+            if str(session_record.get("provider", "")).strip().lower() != "telegram":
+                self._html_response(
+                    HTTPStatus.BAD_REQUEST,
+                    "<h1>Invalid provider</h1><p>This session is not a Telegram auth session.</p>",
+                )
+                return
+
+            if str(session_record.get("status", "")).strip().lower() == "completed":
+                self._html_response(
+                    HTTPStatus.OK,
+                    "<h1>Telegram sign-in already completed</h1><p>You can close this tab and return to the app.</p>",
+                )
+                return
+
+            telegram = _telegram_settings()
+            bot_username = str(session_record.get("telegram_bot_username", "")).strip()
+            if not bot_username:
+                bot_username = str(telegram.get("bot_username", "")).strip()
+            bot_link = str(session_record.get("telegram_bot_link", "")).strip()
+            if not bot_link and bot_username:
+                login_code = str(session_record.get("telegram_login_code", "")).strip().upper()
+                if login_code:
+                    bot_link = _telegram_bot_link(bot_username, login_code)
+            login_code = str(session_record.get("telegram_login_code", "")).strip().upper()
+            if not bot_username or not login_code:
+                self._html_response(
+                    HTTPStatus.BAD_REQUEST,
+                    "<h1>Telegram auth is not configured</h1><p>Open /ui and fill Telegram bot config first.</p>",
+                )
+                return
+            if not bot_link:
+                bot_link = f"https://t.me/{bot_username}"
+
+            self._html_response(
+                HTTPStatus.OK,
+                _render_telegram_start_html(
+                    session_id=state,
+                    bot_username=bot_username,
+                    bot_link=bot_link,
+                    login_code=login_code,
+                ),
+            )
+            return
+
         if path == "/auth/callback":
             provider = str(query.get("provider", ["unknown"])[0]).strip()
             code = str(query.get("code", [""])[0]).strip()
@@ -1401,6 +1784,15 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     {"ok": False, "error": "session not found"},
                 )
                 return
+
+            if (
+                str(session_record.get("provider", "")).strip().lower() == "telegram"
+                and str(session_record.get("status", "")).strip().lower() == "pending"
+            ):
+                _poll_telegram_login_updates()
+                refreshed = _get_device_session(session_id)
+                if refreshed is not None:
+                    session_record = refreshed
 
             self._json_response(
                 HTTPStatus.OK,
@@ -1492,6 +1884,16 @@ class GatewayHandler(BaseHTTPRequestHandler):
                         "google_client_secret_configured": bool(
                             str(effective.get("google_client_secret", "")).strip()
                         ),
+                        "telegram_enabled": _parse_bool(
+                            effective.get("telegram_enabled", False),
+                            False,
+                        ),
+                        "telegram_bot_username": str(
+                            effective.get("telegram_bot_username", "")
+                        ),
+                        "telegram_bot_token_configured": bool(
+                            str(effective.get("telegram_bot_token", "")).strip()
+                        ),
                         "public_base_url": public_base_url,
                         "google_redirect_hint": google_redirect_hint,
                         "google_redirect_matches_hint": google_redirect_matches_hint,
@@ -1536,6 +1938,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     "provider": session_record["provider"],
                     "status": session_record["status"],
                     "auth_url": session_record["auth_url"],
+                    "telegram_bot_link": session_record.get("telegram_bot_link", ""),
                     "expires_in_sec": AUTH_DEVICE_SESSION_TTL_SEC,
                 },
             )

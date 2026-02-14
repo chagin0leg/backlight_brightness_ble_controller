@@ -115,7 +115,7 @@ cp /opt/backlight-stack/deploy/.env.example /opt/backlight-stack/deploy/.env
 
 Set at least:
 - `AUTH_SUBJECT_SALT`
-- `TELEGRAM_BOT_TOKEN` (if Telegram is used)
+- `TELEGRAM_BOT_TOKEN` and `TELEGRAM_BOT_USERNAME` (if Telegram is used)
 - optional `DIAGNOSTICS_INGEST_API_KEY`
 - Google values can be filled later in web dashboard (`/ui`)
 - `ENABLE_TRYCLOUDFLARE=true` keeps temporary public URL enabled by default
@@ -147,6 +147,7 @@ sudo systemctl enable --now backlight-cloudflared.service
 - `POST /ui/api/config/google` - update Google/dashboard config from UI
 - `GET /auth/google/start` - start Google OAuth
 - `GET /auth/google/callback` - Google callback endpoint
+- `GET /auth/telegram/start?state=...` - Telegram device-login helper page
 - `GET /auth/callback` - OAuth callback relay (code is not logged)
 - `GET /auth/ticket?ticket=...` - short-lived callback ticket fetch
 - `POST /auth/device/start` - start device auth session
@@ -165,6 +166,12 @@ sudo systemctl enable --now backlight-cloudflared.service
 
 If server restarts and temporary URL changes, dashboard highlights new redirect hint.
 When auto-follow is enabled (default), gateway updates local redirect URI field automatically to current hint.
+
+Telegram flow does not require stable public callback URL:
+- configure bot token + username once in local dashboard
+- app opens Telegram helper page and bot deep-link
+- user sends `/start login_<code>` in bot
+- device session completes via Telegram polling
 
 ## 10. HIL stand support on same Arch node
 

@@ -31,7 +31,7 @@ When quick tunnel is enabled, response also includes:
 
 ## `POST /ui/api/config/google`
 
-Updates runtime Google config and dashboard local-name settings.
+Updates runtime auth config (Google + Telegram) and dashboard local-name settings.
 
 ## `GET /health`
 
@@ -106,6 +106,15 @@ Handles Google OAuth callback:
 - maps user to anonymous hashed subject
 - updates device session when `state` is present
 
+## `GET /auth/telegram/start?state=...`
+
+Renders Telegram sign-in helper page for device flow session.
+
+Behavior:
+- shows one-time login code
+- provides direct `t.me/<bot>?start=login_<code>` link
+- polls `/auth/device/status` until completed/failed
+
 ## `POST /auth/telegram/verify`
 
 Accepts Telegram Login Widget payload JSON and validates hash using `TELEGRAM_BOT_TOKEN`.
@@ -122,6 +131,10 @@ Response includes:
 
 Optional input:
 - `state` (if provided and matches active device session, marks session completed)
+
+Additional Telegram device flow behavior:
+- gateway can poll Telegram Bot API `getUpdates`
+- `/start login_<code>` message in bot completes pending session without fixed public callback URL
 
 ## `POST /diagnostics/ingest`
 
@@ -162,6 +175,8 @@ Client profile-registry config supports:
 - `DATA_DIR` (default `/data`)
 - `MAX_BODY_BYTES` (default `1048576`)
 - `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_BOT_USERNAME` (without `@`)
+- `TELEGRAM_AUTH_ENABLED` (default auto when token+username are set)
 - `AUTH_SUBJECT_SALT`
 - `DIAGNOSTICS_INGEST_API_KEY` (optional)
 - `APP_REDIRECT_BASE` (optional hint for auth callback redirect)

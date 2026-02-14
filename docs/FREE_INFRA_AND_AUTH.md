@@ -86,6 +86,7 @@ Use a free-tier identity platform or a tunnel-backed lightweight gateway:
 - Telegram auth requires signature/hash verification.
 - Verification must happen in a trusted serverless function (not on client).
 - Cloudflare Worker is the preferred free option for this verification step.
+- For unstable/public URLs, use bot deep-link + one-time code polling (`/start login_<code>`) to avoid fixed callback dependence.
 
 ### Additional high-conversion options
 

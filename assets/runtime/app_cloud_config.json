@@ -38,7 +38,7 @@
         "enabled": true,
         "display_name": "Telegram",
         "oauth_start_url": "",
-        "notes": "Requires serverless signature/hash verification"
+        "notes": "Supports bot deep-link + one-time code flow (no fixed public callback required)"
       },
       {
         "provider": "github",
