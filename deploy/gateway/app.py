@@ -839,6 +839,7 @@ def _render_dashboard_html() -> str:
       <div style="margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
         <button id="saveBtn" type="button">Save config</button>
         <button id="refreshBtn" type="button">Refresh status</button>
+        <button id="copyRedirectBtn" type="button">Copy current Redirect URI</button>
         <a id="googleStartLink" href="/auth/google/start" style="color:#93c5fd; align-self:center;">Start Google login test</a>
       </div>
       <div id="saveResult" class="muted" style="margin-top: 8px;"></div>
@@ -858,6 +859,8 @@ def _render_dashboard_html() -> str:
   </div>
 
   <script>
+    let latestRedirectHint = '';
+
     async function fetchStatus() {
       const r = await fetch('/ui/api/status', { cache: 'no-store' });
       if (!r.ok) {
@@ -912,6 +915,7 @@ def _render_dashboard_html() -> str:
       const hintEl = document.getElementById('publicUrlHint');
       const publicBase = cfg.public_base_url || '';
       const redirectHint = cfg.google_redirect_hint || '';
+      latestRedirectHint = redirectHint;
       const redirectMatches = !!cfg.google_redirect_matches_hint;
       if (!publicBase) {
         hintEl.innerHTML = '<span class="warn">No public URL detected yet.</span> If this is a fresh start, wait 10-20s and press Refresh.';
@@ -920,6 +924,43 @@ def _render_dashboard_html() -> str:
       } else {
         hintEl.innerHTML = `<span class="ok">Public URL active:</span> <span class="mono">${publicBase}</span><br/><span class="ok">Google Redirect URI is up to date.</span>`;
       }
+    }
+
+    async function copyCurrentRedirectHint() {
+      const outputEl = document.getElementById('saveResult');
+      if (!latestRedirectHint) {
+        outputEl.textContent = 'Redirect URI hint is not available yet. Press Refresh in a few seconds.';
+        return;
+      }
+
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(latestRedirectHint);
+          outputEl.textContent = 'Copied Redirect URI: ' + latestRedirectHint;
+          return;
+        }
+      } catch (e) {
+        // Fallback below.
+      }
+
+      const helper = document.createElement('textarea');
+      helper.value = latestRedirectHint;
+      helper.setAttribute('readonly', 'readonly');
+      helper.style.position = 'absolute';
+      helper.style.left = '-10000px';
+      document.body.appendChild(helper);
+      helper.select();
+      helper.setSelectionRange(0, helper.value.length);
+      let copied = false;
+      try {
+        copied = document.execCommand('copy');
+      } catch (_) {
+        copied = false;
+      }
+      document.body.removeChild(helper);
+      outputEl.textContent = copied
+        ? 'Copied Redirect URI: ' + latestRedirectHint
+        : 'Copy failed. Redirect URI: ' + latestRedirectHint;
     }
 
     async function refresh() {
@@ -956,6 +997,7 @@ def _render_dashboard_html() -> str:
 
     document.getElementById('saveBtn').addEventListener('click', () => { saveConfig().catch(console.error); });
     document.getElementById('refreshBtn').addEventListener('click', () => { refresh().catch(console.error); });
+    document.getElementById('copyRedirectBtn').addEventListener('click', () => { copyCurrentRedirectHint().catch(console.error); });
     refresh().catch(console.error);
     setInterval(() => refresh().catch(console.error), 5000);
   </script>
