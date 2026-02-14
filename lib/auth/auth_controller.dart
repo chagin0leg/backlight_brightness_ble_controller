@@ -86,6 +86,10 @@ class AuthController extends GetxController {
         : null;
 
     options.value = config.auth.providers
+        .where(
+          (providerConfig) =>
+              providerConfig.provider != AuthProviderType.anonymousGuest,
+        )
         .map(
           (providerConfig) => AuthProviderOption(
             provider: providerConfig.provider,
@@ -155,14 +159,9 @@ class AuthController extends GetxController {
     _stopPolling();
 
     if (option.provider == AuthProviderType.anonymousGuest) {
-      completeSignIn(
-        provider: AuthProviderType.anonymousGuest,
-        userId: 'guest-${DateTime.now().millisecondsSinceEpoch}',
-        displayName: 'Guest',
-      );
       return const AuthActionResult(
-        ok: true,
-        message: 'Guest session has been started',
+        ok: false,
+        message: 'Guest sign-in is disabled by product policy',
       );
     }
 

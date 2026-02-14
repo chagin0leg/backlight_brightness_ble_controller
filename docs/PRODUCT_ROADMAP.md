@@ -91,7 +91,7 @@ This document captures the agreed scope for turning the project into a productio
   - [x] Email magic link
   - [x] Phone OTP
   - [x] Passkey/WebAuthn
-  - [x] Anonymous guest
+  - [ ] Anonymous guest (disabled by product policy)
 - [x] Add serverless diagnostics upload path (Cloudflare/Supabase/Firebase webhook).
 - [x] Add profile registry remote manifest update flow.
 

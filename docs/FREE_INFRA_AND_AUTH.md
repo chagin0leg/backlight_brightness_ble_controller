@@ -97,13 +97,12 @@ Use a free-tier identity platform or a tunnel-backed lightweight gateway:
 - Email magic link (low-friction login)
 - Phone OTP (where legally and economically feasible)
 - Passkey/WebAuthn (secure and low-friction returning users)
-- Anonymous guest session (instant entry and best top-of-funnel conversion)
+Guest mode is intentionally disabled by product policy.
 
-Recommended funnel:
+Recommended auth UX:
 
-1. Let user start in anonymous guest mode.
-2. Ask for sign-in only when cloud sync/backup/profile sharing is needed.
-3. Keep 3-5 providers visible, move others into "More options".
+1. Require sign-in before cloud-connected actions.
+2. Keep 3-5 providers visible, move others into "More options".
 
 ## Security model
 

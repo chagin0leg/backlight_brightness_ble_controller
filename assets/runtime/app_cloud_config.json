@@ -91,10 +91,10 @@
       },
       {
         "provider": "anonymous_guest",
-        "enabled": true,
-        "display_name": "Guest mode",
+        "enabled": false,
+        "display_name": "Guest mode (disabled)",
         "oauth_start_url": "",
-        "notes": "Best top-of-funnel conversion, no personal data"
+        "notes": "Disabled by product policy: authentication is required"
       }
     ]
   },

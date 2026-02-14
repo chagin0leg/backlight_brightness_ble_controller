@@ -24,7 +24,7 @@ This document is a plain status snapshot of what is already implemented versus w
 - Remote profile manifest loading path exists.
 - Signed remote profile manifest verification (Ed25519 envelope) is implemented.
 - Auth provider model and UI hooks are implemented.
-- Guest mode auth session shortcut is implemented.
+- Guest mode is disabled by product policy.
 - Device auth polling loop is implemented in client auth controller.
 - Client now supports browser launch, pending-session control, and polling retry guardrails.
 - Session persistence, restoration after restart, and expiry-based re-auth prompts are implemented.
