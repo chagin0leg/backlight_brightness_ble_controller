@@ -110,6 +110,28 @@ def _parse_bool(raw_value: object, default_value: bool = False) -> bool:
     return default_value
 
 
+def _normalize_setup_mode(raw_value: object) -> str:
+    mode = str(raw_value).strip().lower()
+    if mode in {"stable_domain", "quick_tunnel"}:
+        return mode
+    return "quick_tunnel"
+
+
+def _normalize_public_base_url(raw_value: object) -> str:
+    raw = str(raw_value).strip()
+    if not raw:
+        return ""
+    candidate = raw
+    if not candidate.startswith("http://") and not candidate.startswith("https://"):
+        candidate = f"https://{candidate}"
+    parsed = urlparse(candidate)
+    scheme = parsed.scheme.strip().lower()
+    netloc = parsed.netloc.strip().lower()
+    if scheme not in {"http", "https"} or not netloc:
+        return ""
+    return f"{scheme}://{netloc}".rstrip("/")
+
+
 def ensure_directories() -> None:
     DIAGNOSTICS_DIR.mkdir(parents=True, exist_ok=True)
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
@@ -141,6 +163,12 @@ def _default_runtime_config() -> dict[str, object]:
     )
     return {
         "dashboard_local_name": LOCAL_DASHBOARD_NAME,
+        "setup_mode": _normalize_setup_mode(os.getenv("SETUP_MODE", "quick_tunnel")),
+        "stable_public_base_url": _normalize_public_base_url(
+            os.getenv("STABLE_PUBLIC_BASE_URL", "")
+        ),
+        "setup_completed": _parse_bool(os.getenv("SETUP_COMPLETED", "0"), False),
+        "setup_completed_at_utc": "",
         "google_enabled": google_enabled,
         "google_client_id": google_client_id,
         "google_client_secret": google_client_secret,
@@ -186,6 +214,10 @@ def _load_runtime_config() -> dict[str, object]:
 def _update_runtime_config(patch: dict[str, object]) -> dict[str, object]:
     allowed_keys = {
         "dashboard_local_name",
+        "setup_mode",
+        "stable_public_base_url",
+        "setup_completed",
+        "setup_completed_at_utc",
         "google_enabled",
         "google_client_id",
         "google_client_secret",
@@ -205,6 +237,9 @@ def _update_runtime_config(patch: dict[str, object]) -> dict[str, object]:
             continue
         if key in {
             "dashboard_local_name",
+            "setup_mode",
+            "stable_public_base_url",
+            "setup_completed_at_utc",
             "google_client_id",
             "google_client_secret",
             "google_redirect_uri",
@@ -218,6 +253,10 @@ def _update_runtime_config(patch: dict[str, object]) -> dict[str, object]:
             if key == "dashboard_local_name":
                 text = "".join(ch for ch in text.lower() if ch.isalnum() or ch == "-")
                 text = text.strip("-") or LOCAL_DASHBOARD_NAME
+            if key == "setup_mode":
+                text = _normalize_setup_mode(text)
+            if key == "stable_public_base_url":
+                text = _normalize_public_base_url(text)
             if key == "telegram_bot_username":
                 text = text.lstrip("@")
                 text = "".join(ch for ch in text if ch.isalnum() or ch == "_")
@@ -228,6 +267,7 @@ def _update_runtime_config(patch: dict[str, object]) -> dict[str, object]:
             "google_require_verified_email",
             "google_auto_redirect_from_public_url",
             "telegram_enabled",
+            "setup_completed",
         }:
             sanitized_patch[key] = _parse_bool(value, False)
 
@@ -572,7 +612,13 @@ def _maybe_sync_google_redirect_with_public_url(
     if not auto_sync:
         return dict(config)
 
-    public_base_url = _quick_tunnel_public_base_url()
+    setup_mode = _normalize_setup_mode(config.get("setup_mode", "quick_tunnel"))
+    if setup_mode == "stable_domain":
+        public_base_url = _normalize_public_base_url(
+            config.get("stable_public_base_url", "")
+        )
+    else:
+        public_base_url = _quick_tunnel_public_base_url()
     redirect_hint = _google_redirect_hint_from_public_url(public_base_url)
     if not redirect_hint:
         return dict(config)
@@ -881,8 +927,15 @@ def _dashboard_status_payload() -> dict[str, object]:
     device_stats = _device_session_stats()
     uptime_sec = int(time.time()) - STARTED_AT_UNIX
     local_name = str(runtime.get("dashboard_local_name", LOCAL_DASHBOARD_NAME)).strip() or LOCAL_DASHBOARD_NAME
-    public_base_url = _quick_tunnel_public_base_url()
-    google_redirect_hint = _google_redirect_hint_from_public_url(public_base_url)
+    setup_mode = _normalize_setup_mode(runtime.get("setup_mode", "quick_tunnel"))
+    quick_public_base_url = _quick_tunnel_public_base_url()
+    stable_public_base_url = _normalize_public_base_url(
+        runtime.get("stable_public_base_url", "")
+    )
+    effective_public_base_url = (
+        stable_public_base_url if setup_mode == "stable_domain" else quick_public_base_url
+    )
+    google_redirect_hint = _google_redirect_hint_from_public_url(effective_public_base_url)
     current_google_redirect = str(google["redirect_uri"]).strip()
     auto_redirect_enabled = bool(google["auto_redirect_from_public_url"])
     telegram_ready = _telegram_config_ready(telegram)
@@ -893,12 +946,91 @@ def _dashboard_status_payload() -> dict[str, object]:
         == _normalize_redirect_uri(google_redirect_hint)
     )
 
-    google_ready = bool(
+    google_ready_base = bool(
         google["enabled"]
         and google["client_id"]
         and google["client_secret"]
         and google["redirect_uri"]
     )
+    google_ready = bool(
+        google_ready_base
+        and (not google_redirect_hint or google_redirect_matches_hint)
+    )
+    google_enabled = bool(google["enabled"])
+    telegram_enabled = bool(telegram["enabled"])
+    telegram_provider_ready = bool(telegram_enabled and telegram_ready)
+    google_provider_ready = bool(google_enabled and google_ready)
+    provider_ready = bool(telegram_provider_ready or google_provider_ready)
+
+    required_steps = [
+        {
+            "id": "setup-mode",
+            "title": "Setup mode selected",
+            "done": setup_mode in {"quick_tunnel", "stable_domain"},
+            "details": (
+                "Dynamic URL (quick tunnel)"
+                if setup_mode == "quick_tunnel"
+                else "Stable domain"
+            ),
+        },
+        {
+            "id": "public-url",
+            "title": "Public URL for selected mode is available",
+            "done": bool(effective_public_base_url),
+            "details": (
+                f"Using stable URL: {stable_public_base_url}"
+                if setup_mode == "stable_domain"
+                else (
+                    f"Using quick URL: {quick_public_base_url}"
+                    if quick_public_base_url
+                    else "Waiting for quick tunnel URL"
+                )
+            ),
+        },
+        {
+            "id": "provider-ready",
+            "title": "At least one auth provider is fully configured",
+            "done": provider_ready,
+            "details": (
+                "Google or Telegram is ready"
+                if provider_ready
+                else "Configure and enable Google and/or Telegram"
+            ),
+        },
+        {
+            "id": "google-ready",
+            "title": "Google auth readiness",
+            "done": (not google_enabled) or google_provider_ready,
+            "details": (
+                "Google disabled (optional)"
+                if not google_enabled
+                else (
+                    "Google enabled and redirect is in sync"
+                    if google_provider_ready
+                    else "Google enabled but credentials/redirect are incomplete"
+                )
+            ),
+        },
+        {
+            "id": "telegram-ready",
+            "title": "Telegram auth readiness",
+            "done": (not telegram_enabled) or telegram_provider_ready,
+            "details": (
+                "Telegram disabled (optional)"
+                if not telegram_enabled
+                else (
+                    "Telegram enabled and bot config is ready"
+                    if telegram_provider_ready
+                    else "Telegram enabled but bot username/token are incomplete"
+                )
+            ),
+        },
+    ]
+    required_total = len(required_steps)
+    required_done = sum(1 for item in required_steps if bool(item.get("done")))
+    setup_ready = required_done == required_total
+    setup_completed = _parse_bool(runtime.get("setup_completed", False), False)
+    setup_completed_at_utc = str(runtime.get("setup_completed_at_utc", "")).strip()
 
     steps = [
         {
@@ -967,11 +1099,21 @@ def _dashboard_status_payload() -> dict[str, object]:
         {
             "id": "quick-tunnel",
             "title": "Temporary public URL is active",
-            "done": bool(public_base_url),
+            "done": bool(quick_public_base_url),
             "details": (
-                f"Current URL: {public_base_url}"
-                if public_base_url
+                f"Current URL: {quick_public_base_url}"
+                if quick_public_base_url
                 else "Quick tunnel URL not detected yet. Wait for cloudflared startup."
+            ),
+        },
+        {
+            "id": "stable-domain",
+            "title": "Stable domain URL is configured",
+            "done": bool(stable_public_base_url),
+            "details": (
+                f"Stable URL: {stable_public_base_url}"
+                if stable_public_base_url
+                else "Set stable domain URL in setup wizard if you use stable mode"
             ),
         },
     ]
@@ -990,22 +1132,37 @@ def _dashboard_status_payload() -> dict[str, object]:
             "tickets_active": len(_auth_ticket_store),
             "device_sessions": device_stats,
             "google_configured": google_ready,
-            "google_enabled": bool(google["enabled"]),
+            "google_enabled": google_enabled,
             "telegram_configured": telegram_ready,
-            "telegram_enabled": bool(telegram["enabled"]),
+            "telegram_enabled": telegram_enabled,
             "telegram_bot_username": telegram_bot_username,
             "google_start_endpoint": "/auth/google/start",
             "telegram_start_endpoint": "/auth/telegram/start",
             "google_callback_endpoint": "/auth/google/callback",
-            "public_base_url": public_base_url,
+            "public_base_url": effective_public_base_url,
+            "quick_tunnel_public_base_url": quick_public_base_url,
+            "stable_public_base_url": stable_public_base_url,
             "google_redirect_hint": google_redirect_hint,
             "google_redirect_matches_hint": google_redirect_matches_hint,
             "google_auto_redirect_from_public_url": auto_redirect_enabled,
         },
         "setup_steps": steps,
+        "setup": {
+            "mode": setup_mode,
+            "ready": setup_ready,
+            "completed": setup_completed,
+            "completed_at_utc": setup_completed_at_utc,
+            "required_done": required_done,
+            "required_total": required_total,
+            "required_steps": required_steps,
+        },
         "runtime_config": {
             "dashboard_local_name": local_name,
-            "google_enabled": bool(google["enabled"]),
+            "setup_mode": setup_mode,
+            "stable_public_base_url": stable_public_base_url,
+            "setup_completed": setup_completed,
+            "setup_completed_at_utc": setup_completed_at_utc,
+            "google_enabled": google_enabled,
             "google_client_id": str(google["client_id"]),
             "google_redirect_uri": str(google["redirect_uri"]),
             "google_scope": str(google["scope"]),
@@ -1013,10 +1170,12 @@ def _dashboard_status_payload() -> dict[str, object]:
             "google_allowed_domain": str(google["allowed_domain"]),
             "google_require_verified_email": bool(google["require_verified_email"]),
             "google_client_secret_configured": bool(google["client_secret"]),
-            "telegram_enabled": bool(telegram["enabled"]),
+            "telegram_enabled": telegram_enabled,
             "telegram_bot_username": telegram_bot_username,
             "telegram_bot_token_configured": bool(telegram["bot_token"]),
-            "public_base_url": public_base_url,
+            "public_base_url": effective_public_base_url,
+            "quick_tunnel_public_base_url": quick_public_base_url,
+            "stable_public_base_url": stable_public_base_url,
             "google_redirect_hint": google_redirect_hint,
             "google_redirect_matches_hint": google_redirect_matches_hint,
             "google_auto_redirect_from_public_url": auto_redirect_enabled,
@@ -1036,6 +1195,11 @@ def _dashboard_status_payload() -> dict[str, object]:
                 f"Update Google OAuth Redirect URI to: {google_redirect_hint}"
                 if google_redirect_hint and not google_redirect_matches_hint
                 else "Google Redirect URI is synchronized with current public URL"
+            ),
+            (
+                "Wizard can be completed when required setup steps are all green"
+                if setup_ready
+                else "Finish required setup steps in wizard mode"
             ),
         ],
     }
@@ -1074,96 +1238,156 @@ def _render_dashboard_html() -> str:
       <div id="headline" class="muted">Loading status...</div>
     </div>
 
-    <div class="grid">
+    <div id="wizardRoot" style="display:none;">
       <div class="card">
-        <h2>Setup checklist</h2>
-        <ul id="steps"></ul>
+        <h2>First-run setup wizard</h2>
+        <div id="wizardProgress" class="muted">Loading setup state...</div>
       </div>
-      <div class="card">
-        <h2>Runtime status</h2>
-        <div id="status" class="mono"></div>
+
+      <div class="card" id="wizardModeStep">
+        <h3>Step 1/3: Connectivity scenario</h3>
+        <p class="muted">Action -> result: select scenario and save mode.</p>
+        <div style="display:flex; gap:14px; flex-wrap:wrap; margin:10px 0;">
+          <label style="display:flex; align-items:center; gap:8px; font-size:14px;">
+            <input type="radio" name="setupMode" id="setupModeQuick" value="quick_tunnel" checked />
+            Dynamic URL (quick tunnel, changes are expected)
+          </label>
+          <label style="display:flex; align-items:center; gap:8px; font-size:14px;">
+            <input type="radio" name="setupMode" id="setupModeStable" value="stable_domain" />
+            Stable domain (recommended for Google + Telegram widget)
+          </label>
+        </div>
+        <div>
+          <label>Stable public base URL (used only for stable domain mode)</label>
+          <input id="stablePublicBaseUrl" type="text" placeholder="https://auth.example.com" />
+        </div>
+        <div style="margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
+          <button id="wizardModeSaveBtn" type="button">Save mode</button>
+          <button id="wizardModeNextBtn" type="button">Continue to auth config</button>
+        </div>
+        <div id="wizardModeResult" class="muted" style="margin-top: 8px;"></div>
+      </div>
+
+      <div class="card" id="wizardAuthStep" style="display:none;">
+        <h3>Step 2/3: Auth providers config</h3>
+        <p class="muted">Action -> result: fill fields, click Save config, then check result/status.</p>
+        <div id="publicUrlHint" class="muted" style="margin-bottom: 10px;"></div>
+        <div class="grid">
+          <div>
+            <label>Dashboard name (.local)</label>
+            <input id="dashboardLocalName" type="text" placeholder="backlight" />
+          </div>
+          <div>
+            <label>Google Client ID</label>
+            <input id="googleClientId" type="text" />
+          </div>
+          <div>
+            <label>Google Client Secret (leave empty to keep current)</label>
+            <input id="googleClientSecret" type="password" />
+          </div>
+          <div>
+            <label>Google Redirect URI</label>
+            <input id="googleRedirectUri" type="text" />
+          </div>
+          <div>
+            <label>Google Scope</label>
+            <input id="googleScope" type="text" />
+          </div>
+          <div>
+            <label>Google Prompt</label>
+            <input id="googlePrompt" type="text" />
+          </div>
+          <div>
+            <label>Allowed Google domain (optional)</label>
+            <input id="googleAllowedDomain" type="text" />
+          </div>
+          <div>
+            <label>Google enabled (true/false)</label>
+            <input id="googleEnabled" type="text" />
+          </div>
+          <div>
+            <label>Auto-update Redirect URI from current public URL (true/false)</label>
+            <input id="googleAutoRedirect" type="text" />
+          </div>
+          <div>
+            <label>Telegram enabled (true/false)</label>
+            <input id="telegramEnabled" type="text" />
+          </div>
+          <div>
+            <label>Telegram bot username (without @)</label>
+            <input id="telegramBotUsername" type="text" />
+          </div>
+          <div>
+            <label>Telegram bot token (leave empty to keep current)</label>
+            <input id="telegramBotToken" type="password" />
+          </div>
+        </div>
+        <div style="margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
+          <button id="saveBtn" type="button">Save config</button>
+          <button id="refreshBtn" type="button">Refresh status</button>
+          <button id="copyRedirectBtn" type="button">Copy current Redirect URI</button>
+          <a id="googleStartLink" href="/auth/google/start" style="color:#93c5fd; align-self:center;">Start Google login test</a>
+        </div>
+        <div id="saveResult" class="muted" style="margin-top: 8px;"></div>
+        <div style="margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
+          <button id="wizardAuthBackBtn" type="button">Back</button>
+          <button id="wizardAuthNextBtn" type="button">Continue to validation</button>
+        </div>
+      </div>
+
+      <div class="card" id="wizardValidateStep" style="display:none;">
+        <h3>Step 3/3: Validation and finish</h3>
+        <p class="muted">Action -> result: refresh validation, ensure required steps are [OK], then finish setup.</p>
+        <ul id="requiredSteps"></ul>
+        <div id="wizardValidationSummary" class="muted" style="margin-top: 8px;"></div>
+        <div style="margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
+          <button id="wizardValidateBackBtn" type="button">Back</button>
+          <button id="wizardRefreshBtn" type="button">Refresh validation</button>
+          <button id="wizardCompleteBtn" type="button">Finish setup</button>
+        </div>
+        <div id="wizardCompleteResult" class="muted" style="margin-top: 8px;"></div>
       </div>
     </div>
 
-    <div class="card">
-      <h2>Auth config (Google + Telegram)</h2>
-      <p class="muted">All required setup actions are available here. Save config, then test auth flows.</p>
-      <div id="publicUrlHint" class="muted" style="margin-bottom: 10px;"></div>
+    <div id="dashboardRoot" style="display:none;">
       <div class="grid">
-        <div>
-          <label>Dashboard name (.local)</label>
-          <input id="dashboardLocalName" type="text" placeholder="backlight" />
+        <div class="card">
+          <h2>Setup checklist</h2>
+          <ul id="steps"></ul>
         </div>
-        <div>
-          <label>Google Client ID</label>
-          <input id="googleClientId" type="text" />
-        </div>
-        <div>
-          <label>Google Client Secret (leave empty to keep current)</label>
-          <input id="googleClientSecret" type="password" />
-        </div>
-        <div>
-          <label>Google Redirect URI</label>
-          <input id="googleRedirectUri" type="text" />
-        </div>
-        <div>
-          <label>Google Scope</label>
-          <input id="googleScope" type="text" />
-        </div>
-        <div>
-          <label>Google Prompt</label>
-          <input id="googlePrompt" type="text" />
-        </div>
-        <div>
-          <label>Allowed Google domain (optional)</label>
-          <input id="googleAllowedDomain" type="text" />
-        </div>
-        <div>
-          <label>Google enabled (true/false)</label>
-          <input id="googleEnabled" type="text" />
-        </div>
-        <div>
-          <label>Auto-update Redirect URI from current public URL (true/false)</label>
-          <input id="googleAutoRedirect" type="text" />
-        </div>
-        <div>
-          <label>Telegram enabled (true/false)</label>
-          <input id="telegramEnabled" type="text" />
-        </div>
-        <div>
-          <label>Telegram bot username (without @)</label>
-          <input id="telegramBotUsername" type="text" />
-        </div>
-        <div>
-          <label>Telegram bot token (leave empty to keep current)</label>
-          <input id="telegramBotToken" type="password" />
+        <div class="card">
+          <h2>Runtime status</h2>
+          <div id="status" class="mono"></div>
         </div>
       </div>
-      <div style="margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
-        <button id="saveBtn" type="button">Save config</button>
-        <button id="refreshBtn" type="button">Refresh status</button>
-        <button id="copyRedirectBtn" type="button">Copy current Redirect URI</button>
-        <a id="googleStartLink" href="/auth/google/start" style="color:#93c5fd; align-self:center;">Start Google login test</a>
-      </div>
-      <div id="saveResult" class="muted" style="margin-top: 8px;"></div>
-    </div>
 
-    <div class="card">
-      <h2>Endpoints</h2>
-      <ul>
-        <li><span class="mono">GET /health</span></li>
-        <li><span class="mono">POST /auth/device/start</span></li>
-        <li><span class="mono">GET /auth/device/status?session_id=...</span></li>
-        <li><span class="mono">GET /auth/google/start</span></li>
-        <li><span class="mono">GET /auth/google/callback</span></li>
-        <li><span class="mono">GET /auth/telegram/start?state=...</span></li>
-        <li><span class="mono">POST /diagnostics/ingest</span></li>
-      </ul>
+      <div class="card">
+        <h2>Product dashboard</h2>
+        <div id="dashboardActions" class="mono"></div>
+        <div style="margin-top:12px;">
+          <button id="reopenWizardBtn" type="button">Reopen setup wizard</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Endpoints</h2>
+        <ul>
+          <li><span class="mono">GET /health</span></li>
+          <li><span class="mono">POST /auth/device/start</span></li>
+          <li><span class="mono">GET /auth/device/status?session_id=...</span></li>
+          <li><span class="mono">GET /auth/google/start</span></li>
+          <li><span class="mono">GET /auth/google/callback</span></li>
+          <li><span class="mono">GET /auth/telegram/start?state=...</span></li>
+          <li><span class="mono">POST /diagnostics/ingest</span></li>
+        </ul>
+      </div>
     </div>
   </div>
 
   <script>
     let latestRedirectHint = '';
+    let latestStatusData = null;
+    let currentWizardStep = 1;
 
     async function fetchStatus() {
       const r = await fetch('/ui/api/status', { cache: 'no-store' });
@@ -1173,8 +1397,21 @@ def _render_dashboard_html() -> str:
       return await r.json();
     }
 
-    function renderSteps(steps) {
-      const root = document.getElementById('steps');
+    async function postJson(url, payload) {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload || {}),
+      });
+      const data = await r.json();
+      return { ok: r.ok, data };
+    }
+
+    function renderStepList(rootId, steps) {
+      const root = document.getElementById(rootId);
+      if (!root) {
+        return;
+      }
       root.innerHTML = '';
       for (const step of steps || []) {
         const li = document.createElement('li');
@@ -1185,10 +1422,34 @@ def _render_dashboard_html() -> str:
       }
     }
 
-    function renderStatus(data) {
-      document.getElementById('headline').textContent =
-        `Host: ${data.dashboard_host} | Uptime: ${data.uptime_sec}s | UTC: ${data.time_utc}`;
+    function selectedSetupMode() {
+      const stable = document.getElementById('setupModeStable');
+      return stable && stable.checked ? 'stable_domain' : 'quick_tunnel';
+    }
 
+    function applySetupModeToControls(mode) {
+      const normalized = (mode || '').toLowerCase() === 'stable_domain' ? 'stable_domain' : 'quick_tunnel';
+      const quick = document.getElementById('setupModeQuick');
+      const stable = document.getElementById('setupModeStable');
+      if (quick) quick.checked = normalized === 'quick_tunnel';
+      if (stable) stable.checked = normalized === 'stable_domain';
+    }
+
+    function setWizardStep(step) {
+      currentWizardStep = Math.max(1, Math.min(3, Number(step) || 1));
+      const step1 = document.getElementById('wizardModeStep');
+      const step2 = document.getElementById('wizardAuthStep');
+      const step3 = document.getElementById('wizardValidateStep');
+      if (step1) step1.style.display = currentWizardStep === 1 ? '' : 'none';
+      if (step2) step2.style.display = currentWizardStep === 2 ? '' : 'none';
+      if (step3) step3.style.display = currentWizardStep === 3 ? '' : 'none';
+      const progress = document.getElementById('wizardProgress');
+      if (progress) {
+        progress.textContent = `Step ${currentWizardStep}/3`;
+      }
+    }
+
+    function renderDashboard(data) {
       const auth = data.auth || {};
       const svc = data.service || {};
       const lines = [
@@ -1205,10 +1466,16 @@ def _render_dashboard_html() -> str:
         `diagnostics.count=${svc.diagnostics_count || 0}`,
       ];
       document.getElementById('status').textContent = lines.join('\\n');
+      renderStepList('steps', data.setup_steps || []);
 
-      renderSteps(data.setup_steps || []);
+      const actions = data.actions || [];
+      const dashboardActions = document.getElementById('dashboardActions');
+      if (dashboardActions) {
+        dashboardActions.textContent = actions.join('\\n');
+      }
+    }
 
-      const cfg = data.runtime_config || {};
+    function renderCommonConfigFields(cfg) {
       document.getElementById('dashboardLocalName').value = cfg.dashboard_local_name || '';
       document.getElementById('googleClientId').value = cfg.google_client_id || '';
       document.getElementById('googleClientSecret').value = '';
@@ -1222,18 +1489,70 @@ def _render_dashboard_html() -> str:
       document.getElementById('telegramBotUsername').value = cfg.telegram_bot_username || '';
       document.getElementById('telegramBotToken').value = '';
       document.getElementById('googleStartLink').href = '/auth/google/start';
+      document.getElementById('stablePublicBaseUrl').value = cfg.stable_public_base_url || '';
+      applySetupModeToControls(cfg.setup_mode || 'quick_tunnel');
+    }
 
+    function renderPublicUrlHint(cfg) {
       const hintEl = document.getElementById('publicUrlHint');
       const publicBase = cfg.public_base_url || '';
       const redirectHint = cfg.google_redirect_hint || '';
       latestRedirectHint = redirectHint;
       const redirectMatches = !!cfg.google_redirect_matches_hint;
+      if (!hintEl) {
+        return;
+      }
       if (!publicBase) {
-        hintEl.innerHTML = '<span class="warn">No public URL detected yet.</span> If this is a fresh start, wait 10-20s and press Refresh.';
+        hintEl.innerHTML = '<span class="warn">No public URL detected for selected mode yet.</span> Save mode/config and press Refresh.';
       } else if (!redirectMatches) {
         hintEl.innerHTML = `<span class="warn">Public URL changed:</span> <span class="mono">${publicBase}</span><br/>Update Google Redirect URI to <span class="mono">${redirectHint}</span> in Google Console and here, then Save.`;
       } else {
         hintEl.innerHTML = `<span class="ok">Public URL active:</span> <span class="mono">${publicBase}</span><br/><span class="ok">Google Redirect URI is up to date.</span>`;
+      }
+    }
+
+    function renderWizard(data) {
+      const setup = data.setup || {};
+      renderStepList('requiredSteps', setup.required_steps || []);
+      const summary = document.getElementById('wizardValidationSummary');
+      if (summary) {
+        const done = Number(setup.required_done || 0);
+        const total = Number(setup.required_total || 0);
+        const ready = !!setup.ready;
+        summary.innerHTML = ready
+          ? `<span class="ok">Validation passed: ${done}/${total} required steps done.</span>`
+          : `<span class="warn">Validation pending: ${done}/${total} required steps done.</span>`;
+      }
+      const modeResult = document.getElementById('wizardModeResult');
+      if (modeResult) {
+        const mode = (setup.mode || 'quick_tunnel') === 'stable_domain'
+          ? 'stable domain mode'
+          : 'dynamic quick tunnel mode';
+        modeResult.textContent = `Current mode: ${mode}`;
+      }
+    }
+
+    function renderStatus(data) {
+      latestStatusData = data;
+      document.getElementById('headline').textContent =
+        `Host: ${data.dashboard_host} | Uptime: ${data.uptime_sec}s | UTC: ${data.time_utc}`;
+
+      const cfg = data.runtime_config || {};
+      renderCommonConfigFields(cfg);
+      renderPublicUrlHint(cfg);
+
+      const setup = data.setup || {};
+      const setupDone = !!setup.completed && !!setup.ready;
+      const wizardRoot = document.getElementById('wizardRoot');
+      const dashboardRoot = document.getElementById('dashboardRoot');
+      if (wizardRoot) wizardRoot.style.display = setupDone ? 'none' : '';
+      if (dashboardRoot) dashboardRoot.style.display = setupDone ? '' : 'none';
+
+      if (setupDone) {
+        renderDashboard(data);
+      } else {
+        renderWizard(data);
+        setWizardStep(currentWizardStep);
       }
     }
 
@@ -1283,9 +1602,24 @@ def _render_dashboard_html() -> str:
       }
     }
 
+    async function saveSetupMode() {
+      const payload = {
+        setup_mode: selectedSetupMode(),
+        stable_public_base_url: document.getElementById('stablePublicBaseUrl').value,
+      };
+      const result = await postJson('/ui/api/config/google', payload);
+      const out = document.getElementById('wizardModeResult');
+      out.textContent = result.data && result.data.ok
+        ? 'Mode saved successfully.'
+        : 'Failed to save mode: ' + ((result.data && result.data.error) || 'unknown');
+      await refresh();
+    }
+
     async function saveConfig() {
       const payload = {
         dashboard_local_name: document.getElementById('dashboardLocalName').value,
+        setup_mode: selectedSetupMode(),
+        stable_public_base_url: document.getElementById('stablePublicBaseUrl').value,
         google_client_id: document.getElementById('googleClientId').value,
         google_redirect_uri: document.getElementById('googleRedirectUri').value,
         google_scope: document.getElementById('googleScope').value,
@@ -1304,21 +1638,47 @@ def _render_dashboard_html() -> str:
       if (telegramToken) {
         payload.telegram_bot_token = telegramToken;
       }
-      const r = await fetch('/ui/api/config/google', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await r.json();
-      document.getElementById('saveResult').textContent = data.ok
-        ? 'Saved. ' + (data.message || '')
-        : 'Save failed: ' + (data.error || 'unknown');
+      const result = await postJson('/ui/api/config/google', payload);
+      document.getElementById('saveResult').textContent = result.data && result.data.ok
+        ? 'Saved. ' + (result.data.message || '')
+        : 'Save failed: ' + ((result.data && result.data.error) || 'unknown');
+      await refresh();
+    }
+
+    async function completeSetup() {
+      const result = await postJson('/ui/api/setup/complete', {});
+      const out = document.getElementById('wizardCompleteResult');
+      out.textContent = result.data && result.data.ok
+        ? (result.data.message || 'Setup completed.')
+        : 'Cannot complete setup: ' + ((result.data && result.data.error) || 'unknown');
+      await refresh();
+    }
+
+    async function reopenSetup() {
+      const result = await postJson('/ui/api/setup/reset', {});
+      const dashboardActions = document.getElementById('dashboardActions');
+      if (dashboardActions) {
+        dashboardActions.textContent = result.data && result.data.ok
+          ? 'Setup wizard reopened.'
+          : 'Failed to reopen wizard.';
+      }
+      currentWizardStep = 1;
       await refresh();
     }
 
     document.getElementById('saveBtn').addEventListener('click', () => { saveConfig().catch(console.error); });
     document.getElementById('refreshBtn').addEventListener('click', () => { refresh().catch(console.error); });
     document.getElementById('copyRedirectBtn').addEventListener('click', () => { copyCurrentRedirectHint().catch(console.error); });
+    document.getElementById('wizardModeSaveBtn').addEventListener('click', () => { saveSetupMode().catch(console.error); });
+    document.getElementById('wizardModeNextBtn').addEventListener('click', () => { setWizardStep(2); });
+    document.getElementById('wizardAuthBackBtn').addEventListener('click', () => { setWizardStep(1); });
+    document.getElementById('wizardAuthNextBtn').addEventListener('click', () => { setWizardStep(3); });
+    document.getElementById('wizardValidateBackBtn').addEventListener('click', () => { setWizardStep(2); });
+    document.getElementById('wizardRefreshBtn').addEventListener('click', () => { refresh().catch(console.error); });
+    document.getElementById('wizardCompleteBtn').addEventListener('click', () => { completeSetup().catch(console.error); });
+    document.getElementById('reopenWizardBtn').addEventListener('click', () => { reopenSetup().catch(console.error); });
+
+    setWizardStep(1);
     refresh().catch(console.error);
     setInterval(() => refresh().catch(console.error), 5000);
   </script>
@@ -1850,16 +2210,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 return
 
             _update_runtime_config(payload)
-            effective = _get_runtime_config()
-            local_name = str(effective.get("dashboard_local_name", LOCAL_DASHBOARD_NAME))
-            public_base_url = _quick_tunnel_public_base_url()
-            google_redirect_hint = _google_redirect_hint_from_public_url(public_base_url)
-            current_redirect_uri = str(effective.get("google_redirect_uri", "")).strip()
-            google_redirect_matches_hint = bool(
-                google_redirect_hint
-                and _normalize_redirect_uri(current_redirect_uri)
-                == _normalize_redirect_uri(google_redirect_hint)
-            )
+            status_payload = _dashboard_status_payload()
+            runtime_cfg = status_payload.get("runtime_config", {})
+            local_name = str(runtime_cfg.get("dashboard_local_name", LOCAL_DASHBOARD_NAME))
             message = (
                 f"Configuration saved. Dashboard host is http://{local_name}.local "
                 "(if hostname/mdns are configured on host OS)."
@@ -1869,35 +2222,62 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "message": message,
-                    "runtime_config": {
-                        "dashboard_local_name": local_name,
-                        "google_enabled": _parse_bool(effective.get("google_enabled", False), False),
-                        "google_client_id": str(effective.get("google_client_id", "")),
-                        "google_redirect_uri": current_redirect_uri,
-                        "google_scope": str(effective.get("google_scope", "")),
-                        "google_prompt": str(effective.get("google_prompt", "")),
-                        "google_allowed_domain": str(effective.get("google_allowed_domain", "")),
-                        "google_auto_redirect_from_public_url": _parse_bool(
-                            effective.get("google_auto_redirect_from_public_url", True),
-                            True,
-                        ),
-                        "google_client_secret_configured": bool(
-                            str(effective.get("google_client_secret", "")).strip()
-                        ),
-                        "telegram_enabled": _parse_bool(
-                            effective.get("telegram_enabled", False),
-                            False,
-                        ),
-                        "telegram_bot_username": str(
-                            effective.get("telegram_bot_username", "")
-                        ),
-                        "telegram_bot_token_configured": bool(
-                            str(effective.get("telegram_bot_token", "")).strip()
-                        ),
-                        "public_base_url": public_base_url,
-                        "google_redirect_hint": google_redirect_hint,
-                        "google_redirect_matches_hint": google_redirect_matches_hint,
+                    "runtime_config": runtime_cfg,
+                    "setup": status_payload.get("setup", {}),
+                },
+            )
+            return
+
+        if path == "/ui/api/setup/complete":
+            if not self._require_local_ui():
+                return
+            status_payload = _dashboard_status_payload()
+            setup = status_payload.get("setup", {})
+            if not isinstance(setup, dict) or not bool(setup.get("ready")):
+                self._json_response(
+                    HTTPStatus.BAD_REQUEST,
+                    {
+                        "ok": False,
+                        "error": "Setup is not ready yet",
+                        "setup": setup,
                     },
+                )
+                return
+            _update_runtime_config(
+                {
+                    "setup_completed": True,
+                    "setup_completed_at_utc": utc_now_iso(),
+                }
+            )
+            updated_status = _dashboard_status_payload()
+            self._json_response(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "message": "Setup completed. Dashboard mode is now active.",
+                    "setup": updated_status.get("setup", {}),
+                    "runtime_config": updated_status.get("runtime_config", {}),
+                },
+            )
+            return
+
+        if path == "/ui/api/setup/reset":
+            if not self._require_local_ui():
+                return
+            _update_runtime_config(
+                {
+                    "setup_completed": False,
+                    "setup_completed_at_utc": "",
+                }
+            )
+            updated_status = _dashboard_status_payload()
+            self._json_response(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "message": "Setup wizard has been reopened.",
+                    "setup": updated_status.get("setup", {}),
+                    "runtime_config": updated_status.get("runtime_config", {}),
                 },
             )
             return
