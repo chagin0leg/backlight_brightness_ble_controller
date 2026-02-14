@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:developer';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:backlight_brightness_ble_controller/ads/ad_controller.dart';
+import 'package:backlight_brightness_ble_controller/analytics/anonymous_analytics_service.dart';
 import 'package:backlight_brightness_ble_controller/auth/auth_controller.dart';
 import 'package:backlight_brightness_ble_controller/auth/auth_provider.dart';
 import 'package:backlight_brightness_ble_controller/cloud/app_cloud_config.dart';
@@ -37,6 +39,7 @@ AppCloudConfig appCloudConfig = AppCloudConfig.disabled();
 DeviceProfile? activeProfile;
 int? lastSyncedBrightness;
 AppSettingsController? appSettingsControllerRef;
+AnonymousAnalyticsService? analyticsServiceRef;
 
 void main() {
   runApp(const MaterialApp(debugShowCheckedModeBanner: false, home: MyApp()));
@@ -61,6 +64,8 @@ class _MyAppState extends State<MyApp> {
       Get.put(BrightnessController());
   final AuthController authController = Get.put(AuthController());
   final AdController adController = Get.put(AdController());
+  final AnonymousAnalyticsService analyticsService =
+      Get.put(AnonymousAnalyticsService(random: Random()));
   final AppSettingsController settingsController =
       Get.put(AppSettingsController());
 
@@ -69,11 +74,22 @@ class _MyAppState extends State<MyApp> {
     appCloudConfig = await AppCloudConfigLoader.load();
     await settingsController.load();
     appSettingsControllerRef = settingsController;
+    analyticsServiceRef = analyticsService;
     brightnessController.setPollingIntervalSeconds(
       settingsController.settings.value.brightnessPollIntervalSeconds,
     );
     await authController.configure(appCloudConfig);
     await adController.configure(appCloudConfig.ads);
+    analyticsService.configure(
+      config: appCloudConfig.anonymousAnalytics,
+      userEnabled: settingsController.settings.value.anonymousAnalyticsEnabled,
+    );
+    analyticsService.trackUsage(
+      'app_start',
+      params: <String, dynamic>{
+        'backend': appCloudConfig.backendKind.name,
+      },
+    );
     _applyDiagnosticsCloudConfig(appCloudConfig);
     cloudStatus.value = 'Cloud backend: ${_backendLabel(appCloudConfig.backendKind)}';
 
@@ -137,16 +153,31 @@ class _MyAppState extends State<MyApp> {
 
   Future<void> _startAuthFlow(AuthProviderType provider) async {
     authFlowStatus.value = 'Starting sign-in...';
+    analyticsService.trackUsage(
+      'auth_start',
+      params: <String, dynamic>{'provider': provider.name},
+    );
     final result = await authController.beginSignIn(provider);
     final authUrl = result.externalAuthUrl ??
         authController.pendingExternalAuthUrl.value;
     if (!result.ok) {
       authFlowStatus.value = result.message;
+      analyticsService.trackUsage(
+        'auth_start_failed',
+        params: <String, dynamic>{
+          'provider': provider.name,
+          'message': result.message,
+        },
+      );
       return;
     }
 
     if (authUrl == null || authUrl.isEmpty) {
       authFlowStatus.value = result.message;
+      analyticsService.trackUsage(
+        'auth_url_missing',
+        params: <String, dynamic>{'provider': provider.name},
+      );
       return;
     }
 
@@ -154,6 +185,10 @@ class _MyAppState extends State<MyApp> {
     authFlowStatus.value = launched
         ? '${result.message}. Browser has been opened.'
         : '${result.message}. Failed to open browser automatically, URL copied.';
+    analyticsService.trackUsage(
+      launched ? 'auth_browser_opened' : 'auth_browser_open_failed',
+      params: <String, dynamic>{'provider': provider.name},
+    );
   }
 
   Uri? _normalizeExternalAuthUri(String rawUrl) {
@@ -310,6 +345,18 @@ class _MyAppState extends State<MyApp> {
       title: 'Cloud status',
       children: <Widget>[
         Text(cloudStatus.value, textAlign: TextAlign.center),
+        const SizedBox(height: 6),
+        Text(
+          analyticsService.status.value,
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Analytics queue: ${analyticsService.queuedEvents.value}',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12),
+        ),
       ],
     );
   }
@@ -678,8 +725,12 @@ class _MyAppState extends State<MyApp> {
     );
     settingsWorker = ever<AppSettings>(
       settingsController.settings,
-      (settings) =>
-          brightnessController.setPollingIntervalSeconds(settings.brightnessPollIntervalSeconds),
+      (settings) {
+        brightnessController.setPollingIntervalSeconds(
+          settings.brightnessPollIntervalSeconds,
+        );
+        analyticsService.updateUserEnabled(settings.anonymousAnalyticsEnabled);
+      },
     );
 
     connectionStream = WinBle.connectionStream.listen((event) {
@@ -695,6 +746,7 @@ class _MyAppState extends State<MyApp> {
         activeProfile = null;
         lastSyncedBrightness = null;
         _scheduleReconnect(reason: 'device disconnected');
+        analyticsService.trackUsage('ble_disconnected');
       }
     });
 
@@ -704,6 +756,13 @@ class _MyAppState extends State<MyApp> {
         _resetReconnectBackoff();
         unawaited(
           adController.markProductValueReached(reason: 'first device connection'),
+        );
+        analyticsService.trackUsage(
+          'ble_connected',
+          params: <String, dynamic>{
+            'device_name': device?.name ?? '',
+            'profile': activeProfile?.id ?? '',
+          },
         );
       }
     });
@@ -720,6 +779,8 @@ class _MyAppState extends State<MyApp> {
     reconnectTimer?.cancel();
     brightnessWorker?.dispose();
     settingsWorker?.dispose();
+    analyticsService.dispose();
+    analyticsServiceRef = null;
     scanStream?.cancel();
     connectionStream?.cancel();
     bleStateStream?.cancel();
@@ -1050,6 +1111,7 @@ Future<void> captureUnknownDevice({
   if (!_shouldSaveUnknownReport(event.address)) {
     diagnosticsStatus.value =
         'Unknown device detected. Diagnostics skipped due to cooldown.';
+    analyticsServiceRef?.trackUsage('unknown_device_cooldown');
     return;
   }
 
@@ -1067,6 +1129,7 @@ Future<void> captureUnknownDevice({
   if (saveResult.localPath == null) {
     diagnosticsStatus.value =
         'Unknown device detected. Failed to store diagnostics.';
+    analyticsServiceRef?.trackUsage('unknown_device_save_failed');
     return;
   }
 
@@ -1074,12 +1137,24 @@ Future<void> captureUnknownDevice({
   if (uploadResult == null) {
     diagnosticsStatus.value =
         'Unknown device diagnostics saved locally: ${saveResult.localPath}';
+    analyticsServiceRef?.trackUsage(
+      'unknown_device_saved',
+      params: <String, dynamic>{
+        'upload': 'not_configured',
+      },
+    );
     return;
   }
 
   diagnosticsStatus.value = uploadResult.ok
       ? 'Unknown diagnostics uploaded successfully (${uploadResult.statusCode ?? 0}).'
       : 'Diagnostics saved locally (${saveResult.localPath}), upload failed: ${uploadResult.message}';
+  analyticsServiceRef?.trackUsage(
+    uploadResult.ok ? 'unknown_device_uploaded' : 'unknown_device_upload_failed',
+    params: <String, dynamic>{
+      'status_code': uploadResult.statusCode ?? 0,
+    },
+  );
 }
 
 bool _shouldSaveUnknownReport(String deviceAddress) {

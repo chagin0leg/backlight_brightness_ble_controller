@@ -33,6 +33,8 @@ This document is a plain status snapshot of what is already implemented versus w
 - Basic AdMob banner runtime integration is implemented with platform-safe fallback.
 - Persistent app settings are implemented (poll interval, sync on/off, min/max output brightness, diagnostics consent, anonymous analytics toggle).
 - Preferred BLE device persistence and reconnect-focused scanning are implemented for Windows flow.
+- Anonymous analytics event schema and client queue/flush pipeline are implemented.
+- Telemetry payload sanitizer blocks common direct-identifier keys/values (email/phone/name/token/password).
 
 ## Self-hosted backend templates
 

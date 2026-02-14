@@ -18,6 +18,7 @@
 - Collect only anonymous technical/product telemetry.
 - Avoid direct identifiers (email, phone, full name) in telemetry payloads.
 - Use coarse event labels and aggregated counters.
+- Runtime analytics pipeline sanitizes sensitive-looking keys/values before enqueue/upload.
 
 ## Allowed anonymous signals
 
@@ -25,6 +26,7 @@
 - Feature usage counters
 - Unknown device detection and profile mismatch counts
 - Crash and error classes (without personal payloads)
+- Auth flow and BLE lifecycle coarse status events (anonymous)
 
 ## User controls
 
