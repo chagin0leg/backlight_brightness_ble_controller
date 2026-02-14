@@ -11,6 +11,7 @@ class BrightnessController extends GetxController {
   final BrightnessProvider _provider;
   final RxnInt value = RxnInt();
   final RxString providerLabel = ''.obs;
+  final RxInt pollIntervalSeconds = 1.obs;
   Timer? _timer;
 
   @override
@@ -18,14 +19,28 @@ class BrightnessController extends GetxController {
     super.onInit();
     providerLabel.value = _provider.sourceDescription;
     _pollBrightness();
-    _timer = Timer.periodic(
-      const Duration(seconds: 1),
-      (timer) => _pollBrightness(),
-    );
+    _restartPolling();
   }
 
   Future<void> _pollBrightness() async {
     value.value = await _provider.getBrightness();
+  }
+
+  void setPollingIntervalSeconds(int seconds) {
+    final normalized = seconds.clamp(1, 10).toInt();
+    if (normalized == pollIntervalSeconds.value) {
+      return;
+    }
+    pollIntervalSeconds.value = normalized;
+    _restartPolling();
+  }
+
+  void _restartPolling() {
+    _timer?.cancel();
+    _timer = Timer.periodic(
+      Duration(seconds: pollIntervalSeconds.value),
+      (timer) => _pollBrightness(),
+    );
   }
 
   @override

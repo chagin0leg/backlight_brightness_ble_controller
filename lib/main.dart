@@ -9,6 +9,8 @@ import 'package:backlight_brightness_ble_controller/cloud/app_cloud_config.dart'
 import 'package:backlight_brightness_ble_controller/cloud/unknown_device_report_uploader.dart';
 import 'package:backlight_brightness_ble_controller/device_profile.dart';
 import 'package:backlight_brightness_ble_controller/device_profile_registry.dart';
+import 'package:backlight_brightness_ble_controller/settings/app_settings.dart';
+import 'package:backlight_brightness_ble_controller/settings/app_settings_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:backlight_brightness_ble_controller/brightness.dart';
@@ -25,7 +27,6 @@ final RxString cloudStatus = RxString('Cloud config not loaded');
 final RxString profileStatus = RxString('Profile: not selected');
 final RxString diagnosticsStatus = RxString('');
 final RxString authFlowStatus = RxString('');
-final RxBool diagnosticsUploadConsent = false.obs;
 final RxList<String> services = <String>[].obs;
 final DeviceProfileRegistry deviceProfileRegistry = DeviceProfileRegistry();
 final UnknownDeviceDiagnosticsCollector diagnosticsCollector =
@@ -34,6 +35,7 @@ final Map<String, DateTime> unknownDeviceReportRateLimit = <String, DateTime>{};
 AppCloudConfig appCloudConfig = AppCloudConfig.disabled();
 DeviceProfile? activeProfile;
 int? lastSyncedBrightness;
+AppSettingsController? appSettingsControllerRef;
 
 void main() {
   runApp(const MaterialApp(debugShowCheckedModeBanner: false, home: MyApp()));
@@ -50,17 +52,25 @@ class _MyAppState extends State<MyApp> {
   StreamSubscription? connectionStream;
   StreamSubscription? bleStateStream;
   Worker? brightnessWorker;
+  Worker? settingsWorker;
   BleState bleState = BleState.Unknown;
   final BrightnessController brightnessController =
       Get.put(BrightnessController());
   final AuthController authController = Get.put(AuthController());
   final AdController adController = Get.put(AdController());
+  final AppSettingsController settingsController =
+      Get.put(AppSettingsController());
 
   Timer? restart;
 
   Future<void> initialize() async {
     status.value = 'Loading cloud configuration';
     appCloudConfig = await AppCloudConfigLoader.load();
+    await settingsController.load();
+    appSettingsControllerRef = settingsController;
+    brightnessController.setPollingIntervalSeconds(
+      settingsController.settings.value.brightnessPollIntervalSeconds,
+    );
     await authController.configure(appCloudConfig);
     await adController.configure(appCloudConfig.ads);
     _applyDiagnosticsCloudConfig(appCloudConfig);
@@ -80,8 +90,10 @@ class _MyAppState extends State<MyApp> {
     }
     status.value = 'Initializing BLE';
     await WinBle.initialize(serverPath: await WinServer.path, enableLog: true);
-    status.value = 'Scanning';
-    WinBle.startScanning();
+    status.value = settingsController.settings.value.hasPreferredDevice
+        ? 'Scanning for preferred device'
+        : 'Scanning';
+    _startScanBurst();
   }
 
   void _applyDiagnosticsCloudConfig(AppCloudConfig config) {
@@ -201,6 +213,18 @@ class _MyAppState extends State<MyApp> {
   void _cancelPendingAuthFlow() {
     authController.cancelPendingSignIn();
     authFlowStatus.value = 'Pending sign-in was cancelled.';
+  }
+
+  void _startScanBurst({int seconds = 10}) {
+    if (device != null) {
+      return;
+    }
+    WinBle.startScanning();
+    Future.delayed(Duration(seconds: seconds), () {
+      if (device == null) {
+        WinBle.stopScanning();
+      }
+    });
   }
 
   Widget _buildSectionCard({
@@ -379,6 +403,10 @@ class _MyAppState extends State<MyApp> {
   }
 
   Widget _buildDeviceSection() {
+    final effectiveBrightness = settingsController.transformBrightness(
+      brightnessController.value.value ?? 0,
+    );
+
     return _buildSectionCard(
       icon: Icons.bluetooth_audio_outlined,
       title: 'Device sync',
@@ -397,6 +425,117 @@ class _MyAppState extends State<MyApp> {
           textAlign: TextAlign.center,
           style: const TextStyle(fontSize: 12),
         ),
+        const SizedBox(height: 6),
+        Text(
+          'Output brightness target: ${effectiveBrightness ?? '-'} '
+          '(range ${settingsController.settings.value.minOutputBrightnessPercent}'
+          '-${settingsController.settings.value.maxOutputBrightnessPercent})',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSettingsSection() {
+    final current = settingsController.settings.value;
+    final hasPreferred = current.hasPreferredDevice;
+
+    return _buildSectionCard(
+      icon: Icons.settings_outlined,
+      title: 'Settings',
+      children: <Widget>[
+        Text(settingsController.status.value, textAlign: TextAlign.center),
+        const SizedBox(height: 4),
+        SwitchListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Enable brightness sync'),
+          value: current.syncEnabled,
+          onChanged: (value) => settingsController.setSyncEnabled(value),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Brightness poll interval: ${current.brightnessPollIntervalSeconds}s',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12),
+        ),
+        Slider(
+          min: 1,
+          max: 10,
+          divisions: 9,
+          label: '${current.brightnessPollIntervalSeconds}s',
+          value: current.brightnessPollIntervalSeconds.toDouble(),
+          onChanged: (value) => settingsController.setBrightnessPollIntervalSeconds(
+            value.round(),
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          'Min output brightness: ${current.minOutputBrightnessPercent}%',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12),
+        ),
+        Slider(
+          min: 0,
+          max: 100,
+          divisions: 100,
+          label: '${current.minOutputBrightnessPercent}%',
+          value: current.minOutputBrightnessPercent.toDouble(),
+          onChanged: (value) => settingsController.setOutputBrightnessRange(
+            min: value.round(),
+            max: current.maxOutputBrightnessPercent,
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          'Max output brightness: ${current.maxOutputBrightnessPercent}%',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12),
+        ),
+        Slider(
+          min: 0,
+          max: 100,
+          divisions: 100,
+          label: '${current.maxOutputBrightnessPercent}%',
+          value: current.maxOutputBrightnessPercent.toDouble(),
+          onChanged: (value) => settingsController.setOutputBrightnessRange(
+            min: current.minOutputBrightnessPercent,
+            max: value.round(),
+          ),
+        ),
+        SwitchListTile(
+          dense: true,
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Enable anonymous analytics'),
+          subtitle: const Text(
+            'Anonymous-only usage and crash counters',
+            style: TextStyle(fontSize: 12),
+          ),
+          value: current.anonymousAnalyticsEnabled,
+          onChanged: (value) => settingsController.setAnonymousAnalyticsEnabled(value),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          hasPreferred
+              ? 'Preferred device: ${current.preferredDeviceName ?? current.preferredDeviceAddress}'
+              : 'Preferred device: not selected yet',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12),
+        ),
+        if (hasPreferred) ...<Widget>[
+          const SizedBox(height: 6),
+          Text(
+            current.preferredDeviceAddress ?? '',
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 11),
+          ),
+          const SizedBox(height: 6),
+          OutlinedButton(
+            onPressed: settingsController.clearPreferredDevice,
+            child: const Text('Forget preferred device'),
+          ),
+        ],
       ],
     );
   }
@@ -404,8 +543,9 @@ class _MyAppState extends State<MyApp> {
   Widget _buildDiagnosticsSection() {
     final children = <Widget>[
       CheckboxListTile(
-        value: diagnosticsUploadConsent.value,
-        onChanged: (value) => diagnosticsUploadConsent.value = value ?? false,
+        value: settingsController.settings.value.diagnosticsUploadConsent,
+        onChanged: (value) =>
+            settingsController.setDiagnosticsUploadConsent(value ?? false),
         dense: true,
         contentPadding: EdgeInsets.zero,
         controlAffinity: ListTileControlAffinity.leading,
@@ -483,17 +623,25 @@ class _MyAppState extends State<MyApp> {
       brightnessController.value,
       (brightness) => syncBrightnessWithDevice(brightness),
     );
+    settingsWorker = ever<AppSettings>(
+      settingsController.settings,
+      (settings) =>
+          brightnessController.setPollingIntervalSeconds(settings.brightnessPollIntervalSeconds),
+    );
 
     connectionStream = WinBle.connectionStream.listen((event) {
       log('Connection Event : $event');
       if (device != null &&
           event["device"] == device!.address &&
           event["connected"] == false) {
-        status.value = 'Disconnected';
+        status.value = settingsController.settings.value.hasPreferredDevice
+            ? 'Disconnected. Waiting for preferred device'
+            : 'Disconnected';
         profileStatus.value = 'Profile: not selected';
         device = null;
         activeProfile = null;
         lastSyncedBrightness = null;
+        _startScanBurst(seconds: 12);
       }
     });
 
@@ -506,8 +654,7 @@ class _MyAppState extends State<MyApp> {
 
     restart = Timer.periodic(const Duration(seconds: 15), (timer) {
       if (device == null) {
-        WinBle.startScanning();
-        Future.delayed(const Duration(seconds: 10), () => WinBle.stopScanning());
+        _startScanBurst();
       }
     });
   }
@@ -517,6 +664,7 @@ class _MyAppState extends State<MyApp> {
     WinBle.stopScanning();
     restart?.cancel();
     brightnessWorker?.dispose();
+    settingsWorker?.dispose();
     scanStream?.cancel();
     connectionStream?.cancel();
     bleStateStream?.cancel();
@@ -539,6 +687,7 @@ class _MyAppState extends State<MyApp> {
                     _buildCloudSection(),
                     _buildAuthSection(),
                     _buildDeviceSection(),
+                    _buildSettingsSection(),
                     _buildDiagnosticsSection(),
                     _buildAdSection(),
                   ],
@@ -554,12 +703,23 @@ class _MyAppState extends State<MyApp> {
 
 Future<bool> connectionProcess(BleDevice event) async {
   if (device == null) {
-    if (event.name.isEmpty) {
+    final settingsController = appSettingsControllerRef;
+    final isPreferredCandidate =
+        settingsController?.shouldConsiderDeviceAddress(event.address) ?? true;
+    if (settingsController != null &&
+        !isPreferredCandidate) {
       return false;
     }
+    final hasPreferred = settingsController?.settings.value.hasPreferredDevice ?? false;
+    if (event.name.isEmpty && !hasPreferred) {
+      return false;
+    }
+    final candidateName = event.name.isEmpty
+        ? (settingsController?.settings.value.preferredDeviceName ?? event.address)
+        : event.name;
 
     device = event;
-    status.value = 'Candidate found: ${event.name}';
+    status.value = 'Candidate found: $candidateName';
     profileStatus.value = 'Profile: matching';
     diagnosticsStatus.value = '';
 
@@ -594,7 +754,7 @@ Future<bool> connectionProcess(BleDevice event) async {
         .toList(growable: false);
 
     final matchResult = DeviceProfileMatcher.match(
-      deviceName: event.name,
+      deviceName: candidateName,
       serviceUuids: services.toList(),
       characteristicUuids: characteristics,
       candidates: deviceProfileRegistry.profiles,
@@ -645,6 +805,12 @@ Future<bool> connectionProcess(BleDevice event) async {
     }
 
     status.value = 'Device Ready';
+    if (settingsController != null) {
+      await settingsController.rememberPreferredDevice(
+        address: event.address,
+        name: candidateName,
+      );
+    }
     diagnosticsStatus.value = '';
     return true;
   }
@@ -774,6 +940,13 @@ Future<void> syncBrightnessWithDevice(int? brightnessPercent) async {
   if (brightnessPercent == null) {
     return;
   }
+  final settingsController = appSettingsControllerRef;
+  final transformedBrightness =
+      settingsController?.transformBrightness(brightnessPercent);
+  if (settingsController != null && transformedBrightness == null) {
+    return;
+  }
+  final outputBrightness = transformedBrightness ?? brightnessPercent;
 
   final connectedDevice = device;
   final profile = activeProfile;
@@ -787,13 +960,13 @@ Future<void> syncBrightnessWithDevice(int? brightnessPercent) async {
   }
 
   if (lastSyncedBrightness != null &&
-      (brightnessPercent - lastSyncedBrightness!).abs() < 2) {
+      (outputBrightness - lastSyncedBrightness!).abs() < 2) {
     return;
   }
 
   final payload = BrightnessCommandEncoder.encodeBrightness(
     profile: profile,
-    brightnessPercent: brightnessPercent,
+    brightnessPercent: outputBrightness,
   );
   if (payload == null) {
     return;
@@ -807,8 +980,8 @@ Future<void> syncBrightnessWithDevice(int? brightnessPercent) async {
     brightnessCommand.writeWithResponse,
   );
   if (writeOk) {
-    lastSyncedBrightness = brightnessPercent;
-    status.value = 'Device Ready (brightness synced: $brightnessPercent)';
+    lastSyncedBrightness = outputBrightness;
+    status.value = 'Device Ready (brightness synced: $outputBrightness)';
   }
 }
 
@@ -832,7 +1005,8 @@ Future<void> captureUnknownDevice({
     characteristics: characteristics,
     matchScore: matchResult.score,
     matchReasons: matchResult.reasons,
-    uploadIfConfigured: diagnosticsUploadConsent.value,
+    uploadIfConfigured:
+        appSettingsControllerRef?.settings.value.diagnosticsUploadConsent ?? false,
     errorMessage: errorMessage,
   );
   if (saveResult.localPath == null) {

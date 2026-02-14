@@ -29,6 +29,8 @@ This document is a plain status snapshot of what is already implemented versus w
 - Session persistence, restoration after restart, and expiry-based re-auth prompts are implemented.
 - Main app screen now uses grouped sections (cloud/auth/device/diagnostics/ads) with clearer onboarding actions.
 - Basic AdMob banner runtime integration is implemented with platform-safe fallback.
+- Persistent app settings are implemented (poll interval, sync on/off, min/max output brightness, diagnostics consent, anonymous analytics toggle).
+- Preferred BLE device persistence and reconnect-focused scanning are implemented for Windows flow.
 
 ## Self-hosted backend templates
 
@@ -60,9 +62,8 @@ This document is a plain status snapshot of what is already implemented versus w
 - Google OAuth E2E is implemented, but multi-provider production hardening is still pending.
 - Product-level visual polish and deeper settings/navigation UX are still pending.
 - Ads integration exists, but monetization tuning (placement strategy, frequency, consent UX) is pending.
-- No full settings UX with durable preferences beyond auth session yet.
-- No mature reconnect orchestration and fallback strategy yet.
-- No automated tests/CI coverage for new flows yet.
+- Reconnect orchestration is improved, but advanced fallback strategy is still pending.
+- Basic automated tests and CI analyze/test workflow are added, but coverage is still early-stage.
 - No signed profile update pipeline yet.
 
 ## Bottom line

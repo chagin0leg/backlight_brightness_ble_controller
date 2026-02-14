@@ -36,12 +36,12 @@ This document captures the agreed scope for turning the project into a productio
 
 - [x] Brightness-to-command synchronization pipeline.
 - [x] Brightness smoothing and hysteresis to avoid BLE spam.
-- [ ] Stable reconnect and resume behavior.
-- [ ] Device selection and persistence of preferred device.
+- [x] Stable reconnect and resume behavior.
+- [x] Device selection and persistence of preferred device.
 - [ ] Basic settings:
-  - [ ] polling interval
-  - [ ] min/max output brightness
-  - [ ] sync on/off
+  - [x] polling interval
+  - [x] min/max output brightness
+  - [x] sync on/off
 - [ ] System tray support and OS autostart.
 
 ## Phase 2: Multi-device and profile platform
@@ -128,11 +128,11 @@ This document captures the agreed scope for turning the project into a productio
 ## Phase 5: Product quality and operations
 
 - [ ] Architecture cleanup and modularization.
-- [ ] Unit tests for matcher, mapping, and command encoding.
+- [x] Unit tests for matcher, mapping, and command encoding.
 - [ ] Integration tests with BLE mocks.
 - [ ] CI matrix:
-  - [ ] analyze
-  - [ ] test
+  - [x] analyze
+  - [x] test
   - [ ] platform build smoke checks
 - [ ] Installer/release pipeline and changelog.
 - [ ] In-app profile update mechanism with signatures.
