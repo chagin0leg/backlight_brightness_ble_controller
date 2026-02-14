@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 
 import 'package:backlight_brightness_ble_controller/device_profile.dart';
+import 'package:backlight_brightness_ble_controller/device_profile_signature.dart';
 
 class DeviceProfileRegistry {
   DeviceProfileRegistry();
@@ -47,7 +48,11 @@ class DeviceProfileRegistry {
     }
   }
 
-  Future<bool> loadFromRemoteManifest(String manifestUrl) async {
+  Future<bool> loadFromRemoteManifest(
+    String manifestUrl, {
+    bool signedManifestRequired = false,
+    String? manifestPublicKeyBase64,
+  }) async {
     final uri = Uri.tryParse(manifestUrl);
     if (uri == null) {
       log('Remote profile manifest URL is invalid: $manifestUrl');
@@ -65,11 +70,47 @@ class DeviceProfileRegistry {
 
       final body = await response.transform(utf8.decoder).join();
       final decoded = jsonDecode(body);
+      final keyConfigured =
+          manifestPublicKeyBase64 != null && manifestPublicKeyBase64.trim().isNotEmpty;
+      final looksSignedEnvelope =
+          decoded is Map<String, dynamic> && _looksLikeSignedEnvelope(decoded);
+
+      dynamic manifestPayload = decoded;
+      if (looksSignedEnvelope) {
+        if (!keyConfigured) {
+          log(
+            'Signed manifest received but profile registry public key is missing',
+          );
+          return false;
+        }
+        final envelope = SignedProfileManifestEnvelope.fromMap(
+          decoded as Map<String, dynamic>,
+        );
+        if (envelope == null) {
+          log('Signed manifest envelope is malformed');
+          return false;
+        }
+        final verifier = DeviceProfileSignatureVerifier(
+          publicKeyBase64: manifestPublicKeyBase64!,
+        );
+        final signatureOk = await verifier.verify(envelope);
+        if (!signatureOk) {
+          log('Remote profile manifest signature verification failed');
+          return false;
+        }
+        manifestPayload = envelope.decodePayloadJson();
+      } else if (signedManifestRequired || keyConfigured) {
+        log(
+          'Remote profile manifest must be signed, but unsigned payload was received',
+        );
+        return false;
+      }
+
       final parsedProfiles = <DeviceProfile>[];
-      if (decoded is Map<String, dynamic>) {
-        parsedProfiles.add(DeviceProfile.fromMap(decoded));
-      } else if (decoded is List<dynamic>) {
-        for (final item in decoded) {
+      if (manifestPayload is Map<String, dynamic>) {
+        parsedProfiles.add(DeviceProfile.fromMap(manifestPayload));
+      } else if (manifestPayload is List<dynamic>) {
+        for (final item in manifestPayload) {
           if (item is Map<String, dynamic>) {
             parsedProfiles.add(DeviceProfile.fromMap(item));
           }
@@ -102,6 +143,12 @@ class DeviceProfileRegistry {
             .toList(growable: false),
       );
   }
+}
+
+bool _looksLikeSignedEnvelope(Map<String, dynamic> map) {
+  final payload = map['payload_b64']?.toString() ?? '';
+  final signature = map['signature_b64']?.toString() ?? '';
+  return payload.trim().isNotEmpty || signature.trim().isNotEmpty;
 }
 
 const List<Map<String, dynamic>> _fallbackProfileMaps = <Map<String, dynamic>>[

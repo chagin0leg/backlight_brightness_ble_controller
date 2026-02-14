@@ -136,7 +136,7 @@ This document captures the agreed scope for turning the project into a productio
   - [x] test
   - [ ] platform build smoke checks
 - [ ] Installer/release pipeline and changelog.
-- [ ] In-app profile update mechanism with signatures.
+- [x] In-app profile update mechanism with signatures.
 
 ## Phase 6: Monetization and privacy
 

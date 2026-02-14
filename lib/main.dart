@@ -27,6 +27,7 @@ final RxString cloudStatus = RxString('Cloud config not loaded');
 final RxString profileStatus = RxString('Profile: not selected');
 final RxString diagnosticsStatus = RxString('');
 final RxString authFlowStatus = RxString('');
+final RxString reconnectStatus = RxString('');
 final RxList<String> services = <String>[].obs;
 final DeviceProfileRegistry deviceProfileRegistry = DeviceProfileRegistry();
 final UnknownDeviceDiagnosticsCollector diagnosticsCollector =
@@ -53,6 +54,8 @@ class _MyAppState extends State<MyApp> {
   StreamSubscription? bleStateStream;
   Worker? brightnessWorker;
   Worker? settingsWorker;
+  Timer? reconnectTimer;
+  int reconnectAttempt = 0;
   BleState bleState = BleState.Unknown;
   final BrightnessController brightnessController =
       Get.put(BrightnessController());
@@ -60,8 +63,6 @@ class _MyAppState extends State<MyApp> {
   final AdController adController = Get.put(AdController());
   final AppSettingsController settingsController =
       Get.put(AppSettingsController());
-
-  Timer? restart;
 
   Future<void> initialize() async {
     status.value = 'Loading cloud configuration';
@@ -82,7 +83,13 @@ class _MyAppState extends State<MyApp> {
     if (remoteManifestUrl != null && remoteManifestUrl.isNotEmpty) {
       status.value = 'Syncing remote profile registry';
       final remoteLoaded =
-          await deviceProfileRegistry.loadFromRemoteManifest(remoteManifestUrl);
+          await deviceProfileRegistry.loadFromRemoteManifest(
+        remoteManifestUrl,
+        signedManifestRequired:
+            appCloudConfig.profileRegistry.signedManifestRequired,
+        manifestPublicKeyBase64:
+            appCloudConfig.profileRegistry.manifestPublicKeyBase64,
+      );
       if (!remoteLoaded) {
         diagnosticsStatus.value =
             'Remote profile sync failed. Using local profile assets.';
@@ -93,7 +100,7 @@ class _MyAppState extends State<MyApp> {
     status.value = settingsController.settings.value.hasPreferredDevice
         ? 'Scanning for preferred device'
         : 'Scanning';
-    _startScanBurst();
+    _scheduleReconnect(reason: 'startup', immediate: true);
   }
 
   void _applyDiagnosticsCloudConfig(AppCloudConfig config) {
@@ -219,10 +226,48 @@ class _MyAppState extends State<MyApp> {
     if (device != null) {
       return;
     }
+    reconnectStatus.value = 'Scan in progress';
     WinBle.startScanning();
     Future.delayed(Duration(seconds: seconds), () {
       if (device == null) {
         WinBle.stopScanning();
+        _scheduleReconnect(reason: 'scan timeout');
+      }
+    });
+  }
+
+  int _nextReconnectDelaySeconds(int attempt) {
+    const delays = <int>[0, 2, 5, 10, 20, 30, 45, 60];
+    return delays[attempt.clamp(0, delays.length - 1)];
+  }
+
+  void _resetReconnectBackoff() {
+    reconnectAttempt = 0;
+    reconnectTimer?.cancel();
+    reconnectTimer = null;
+    reconnectStatus.value = 'Connected';
+  }
+
+  void _scheduleReconnect({required String reason, bool immediate = false}) {
+    if (device != null) {
+      return;
+    }
+    reconnectTimer?.cancel();
+    if (!immediate) {
+      reconnectAttempt += 1;
+    } else {
+      reconnectAttempt = 0;
+    }
+    final delaySeconds =
+        immediate ? 0 : _nextReconnectDelaySeconds(reconnectAttempt);
+    reconnectStatus.value = delaySeconds == 0
+        ? 'Reconnect attempt #${reconnectAttempt + 1} (${reason})'
+        : 'Reconnect in ${delaySeconds}s (#${reconnectAttempt + 1}, $reason)';
+
+    reconnectTimer = Timer(Duration(seconds: delaySeconds), () {
+      reconnectTimer = null;
+      if (device == null) {
+        _startScanBurst(seconds: 12);
       }
     });
   }
@@ -412,6 +457,14 @@ class _MyAppState extends State<MyApp> {
       title: 'Device sync',
       children: <Widget>[
         Text(status.value, textAlign: TextAlign.center),
+        if (reconnectStatus.value.isNotEmpty) ...<Widget>[
+          const SizedBox(height: 6),
+          Text(
+            reconnectStatus.value,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 12),
+          ),
+        ],
         const SizedBox(height: 8),
         Text(profileStatus.value, textAlign: TextAlign.center),
         const SizedBox(height: 8),
@@ -641,28 +694,30 @@ class _MyAppState extends State<MyApp> {
         device = null;
         activeProfile = null;
         lastSyncedBrightness = null;
-        _startScanBurst(seconds: 12);
+        _scheduleReconnect(reason: 'device disconnected');
       }
     });
 
     scanStream = WinBle.scanStream.listen((event) async {
-      if (await connectionProcess(event)) WinBle.stopScanning();
+      if (await connectionProcess(event)) {
+        WinBle.stopScanning();
+        _resetReconnectBackoff();
+        unawaited(
+          adController.markProductValueReached(reason: 'first device connection'),
+        );
+      }
     });
 
     bleStateStream =
         WinBle.bleState.listen((BleState state) => bleState = state);
 
-    restart = Timer.periodic(const Duration(seconds: 15), (timer) {
-      if (device == null) {
-        _startScanBurst();
-      }
-    });
+    reconnectStatus.value = 'Waiting for BLE initialization';
   }
 
   @override
   void dispose() {
     WinBle.stopScanning();
-    restart?.cancel();
+    reconnectTimer?.cancel();
     brightnessWorker?.dispose();
     settingsWorker?.dispose();
     scanStream?.cancel();

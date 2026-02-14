@@ -190,16 +190,26 @@ class ProfileRegistryCloudConfig {
   const ProfileRegistryCloudConfig({
     this.remoteManifestUrl,
     this.refreshMinutes = 120,
+    this.signedManifestRequired = false,
+    this.manifestPublicKeyBase64,
   });
 
   final String? remoteManifestUrl;
   final int refreshMinutes;
+  final bool signedManifestRequired;
+  final String? manifestPublicKeyBase64;
 
   factory ProfileRegistryCloudConfig.fromMap(Map<String, dynamic> map) {
     final rawUrl = map['remote_manifest_url']?.toString();
+    final rawPublicKey = map['manifest_public_key_b64']?.toString();
     return ProfileRegistryCloudConfig(
       remoteManifestUrl: (rawUrl == null || rawUrl.trim().isEmpty) ? null : rawUrl,
       refreshMinutes: _toInt(map['refresh_minutes'], 120),
+      signedManifestRequired: _toBool(map['signed_manifest_required'], false),
+      manifestPublicKeyBase64:
+          (rawPublicKey == null || rawPublicKey.trim().isEmpty)
+          ? null
+          : rawPublicKey,
     );
   }
 }

@@ -68,7 +68,7 @@ Use a free-tier identity platform or a tunnel-backed lightweight gateway:
   - GitHub Releases assets
   - Cloudflare R2 public bucket
 - App periodically pulls profile manifest updates.
-- Optional signature verification can be added later for safety.
+- Signed manifest verification is supported (Ed25519 envelope + public key in app config).
 
 ## Authentication provider notes
 

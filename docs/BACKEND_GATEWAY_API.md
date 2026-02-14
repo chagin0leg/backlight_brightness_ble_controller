@@ -135,6 +135,21 @@ Serves optional profile manifest from:
 
 Useful as a lightweight profile update source for app clients.
 
+Recommended signed envelope format for production clients:
+
+```json
+{
+  "algorithm": "ed25519",
+  "key_id": "v1",
+  "payload_b64": "<base64-encoded JSON payload>",
+  "signature_b64": "<base64-encoded Ed25519 signature of payload bytes>"
+}
+```
+
+Client profile-registry config supports:
+- `signed_manifest_required` (boolean)
+- `manifest_public_key_b64` (Ed25519 public key, base64)
+
 ## Environment variables
 
 - `GATEWAY_HOST` (default `0.0.0.0`)

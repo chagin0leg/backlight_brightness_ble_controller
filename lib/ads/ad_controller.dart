@@ -12,9 +12,13 @@ class AdController extends GetxController {
 
   AdsCloudConfig? _config;
   bool _isLoading = false;
+  bool _mobileAdsInitialized = false;
+  bool _productValueReached = false;
+  String? _bannerUnitId;
 
   Future<void> configure(AdsCloudConfig config) async {
     _config = config;
+    _bannerUnitId = null;
     enabled.value = config.enabled;
     bannerVisible.value = false;
     _disposeBanner();
@@ -40,21 +44,53 @@ class AdController extends GetxController {
       status.value = 'AdMob banner unit id is not configured';
       return;
     }
+    _bannerUnitId = unitId;
 
     try {
-      await MobileAds.instance.initialize();
-      await _loadBanner(unitId);
+      if (!_mobileAdsInitialized) {
+        await MobileAds.instance.initialize();
+        _mobileAdsInitialized = true;
+      }
+      if (_productValueReached) {
+        await _loadBanner(unitId);
+      } else {
+        status.value =
+            'Ads are ready but hidden until first successful device connection';
+      }
     } catch (error) {
       status.value = 'Failed to initialize ads: $error';
     }
   }
 
   Future<void> reloadBanner() async {
-    final config = _config;
-    if (config == null) {
+    final unitId = _bannerUnitId;
+    if (unitId == null || unitId.trim().isEmpty) {
       return;
     }
-    await configure(config);
+    if (!_productValueReached) {
+      status.value =
+          'Connect device first to unlock ads (delayed first ad policy)';
+      return;
+    }
+    await _loadBanner(unitId);
+  }
+
+  Future<void> markProductValueReached({String reason = 'device connected'}) async {
+    if (_productValueReached) {
+      return;
+    }
+    _productValueReached = true;
+    final unitId = _bannerUnitId;
+    if (unitId == null || unitId.trim().isEmpty) {
+      status.value = 'Product value reached, ads stay disabled by config';
+      return;
+    }
+    if (!_mobileAdsInitialized) {
+      status.value = 'Ads pending initialization';
+      return;
+    }
+    status.value = 'Product value reached ($reason). Loading banner...';
+    await _loadBanner(unitId);
   }
 
   bool _supportsMobileAdsRuntime() {
@@ -70,28 +106,30 @@ class AdController extends GetxController {
       return;
     }
     _isLoading = true;
+    try {
+      final config = _config;
+      final ad = BannerAd(
+        adUnitId: unitId,
+        request: _buildAdRequest(config?.nonPersonalizedOnly ?? true),
+        size: AdSize.banner,
+        listener: BannerAdListener(
+          onAdLoaded: (ad) {
+            status.value = 'Banner ad loaded';
+            bannerVisible.value = true;
+          },
+          onAdFailedToLoad: (ad, error) {
+            status.value = 'Banner failed: ${error.code} ${error.message}';
+            bannerVisible.value = false;
+            ad.dispose();
+          },
+        ),
+      );
 
-    final config = _config;
-    final ad = BannerAd(
-      adUnitId: unitId,
-      request: _buildAdRequest(config?.nonPersonalizedOnly ?? true),
-      size: AdSize.banner,
-      listener: BannerAdListener(
-        onAdLoaded: (ad) {
-          status.value = 'Banner ad loaded';
-          bannerVisible.value = true;
-        },
-        onAdFailedToLoad: (ad, error) {
-          status.value = 'Banner failed: ${error.code} ${error.message}';
-          bannerVisible.value = false;
-          ad.dispose();
-        },
-      ),
-    );
-
-    bannerAd.value = ad;
-    ad.load();
-    _isLoading = false;
+      bannerAd.value = ad;
+      ad.load();
+    } finally {
+      _isLoading = false;
+    }
   }
 
   void _disposeBanner() {

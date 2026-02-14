@@ -108,7 +108,9 @@
   },
   "profile_registry": {
     "remote_manifest_url": "",
-    "refresh_minutes": 120
+    "refresh_minutes": 120,
+    "signed_manifest_required": false,
+    "manifest_public_key_b64": ""
   },
   "ads": {
     "enabled": false,

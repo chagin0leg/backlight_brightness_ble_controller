@@ -22,6 +22,7 @@ This document is a plain status snapshot of what is already implemented versus w
 
 - Runtime cloud config file is supported (`assets/runtime/app_cloud_config.json`).
 - Remote profile manifest loading path exists.
+- Signed remote profile manifest verification (Ed25519 envelope) is implemented.
 - Auth provider model and UI hooks are implemented.
 - Guest mode auth session shortcut is implemented.
 - Device auth polling loop is implemented in client auth controller.
@@ -63,9 +64,8 @@ This document is a plain status snapshot of what is already implemented versus w
 - Google OAuth E2E is implemented, but multi-provider production hardening is still pending.
 - Product-level visual polish and deeper settings/navigation UX are still pending.
 - Ads integration exists, but monetization tuning (placement strategy, frequency, consent UX) is pending.
-- Reconnect orchestration is improved, but advanced fallback strategy is still pending.
+- Reconnect orchestration includes backoff retries and scan-timeout fallback, but still needs wider field tuning.
 - Basic automated tests and CI analyze/test workflow are added, but coverage is still early-stage.
-- No signed profile update pipeline yet.
 
 ## Bottom line
 
