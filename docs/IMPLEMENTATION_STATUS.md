@@ -29,6 +29,8 @@ This document is a plain status snapshot of what is already implemented versus w
 
 - Minimal Python gateway implemented:
   - `/health`
+  - `/auth/device/start`
+  - `/auth/device/status`
   - `/auth/callback`
   - `/auth/ticket`
   - `/auth/telegram/verify`
@@ -39,6 +41,8 @@ This document is a plain status snapshot of what is already implemented versus w
   - Caddy config
   - Cloudflared config template
   - systemd service templates
+  - one-click Arch installer script
+  - HIL sidecar compose/systemd templates
 
 ## What is not yet production-ready
 

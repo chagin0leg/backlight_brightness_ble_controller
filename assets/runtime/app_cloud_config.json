@@ -2,6 +2,11 @@
   "backend_kind": "custom_webhook",
   "auth": {
     "enabled": true,
+    "device_flow_enabled": true,
+    "device_start_url": "",
+    "device_status_url": "",
+    "poll_interval_seconds": 3,
+    "session_timeout_seconds": 240,
     "providers": [
       {
         "provider": "google",

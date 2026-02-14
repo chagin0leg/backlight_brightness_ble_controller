@@ -64,6 +64,28 @@ The repository includes ready templates:
 
 ## 8. Quick start on Arch Linux
 
+### One-button install (recommended)
+
+From repository root on server:
+
+```bash
+sudo bash deploy/install_arch_one_click.sh
+```
+
+What it does:
+- installs required packages
+- copies deploy templates to `/opt/backlight-stack/deploy`
+- installs systemd units
+- starts `backlight-stack.service`
+
+Optional flags:
+- `INSTALL_CLOUDFLARED=1` (default)
+- `ENABLE_CLOUDFLARED_SERVICE=1` (disabled by default)
+- `ENABLE_HIL_SERVICE=1` (disabled by default)
+- `TARGET_ROOT=/opt/backlight-stack` (default)
+
+### Manual install (advanced)
+
 1. Install base packages:
 
 ```bash
@@ -117,7 +139,27 @@ sudo systemctl enable --now backlight-cloudflared.service
 - `POST /diagnostics/ingest` - anonymous diagnostics ingest (PII keys redacted)
 - `GET /profiles/manifest` - optional profile manifest from local storage
 
-## 10. Scaling path
+## 10. HIL stand support on same Arch node
+
+Included HIL templates:
+
+- `deploy/hil/docker-compose.hil.yml`
+- `deploy/systemd/backlight-hil.service`
+
+Start HIL service:
+
+```bash
+sudo systemctl enable --now backlight-hil.service
+```
+
+Or run manually:
+
+```bash
+cd /opt/backlight-stack/deploy
+sudo bash run-hil.sh
+```
+
+## 11. Scaling path
 
 1. Start with tunnel + single node.
 2. Move profile manifest to CDN/object storage.

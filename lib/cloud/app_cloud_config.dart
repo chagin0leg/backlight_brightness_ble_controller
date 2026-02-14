@@ -91,10 +91,28 @@ class AuthCloudConfig {
   const AuthCloudConfig({
     required this.enabled,
     required this.providers,
+    required this.deviceFlowEnabled,
+    this.deviceStartUrl,
+    this.deviceStatusUrl,
+    this.pollIntervalSeconds = 3,
+    this.sessionTimeoutSeconds = 240,
   });
 
   final bool enabled;
   final List<AuthProviderCloudConfig> providers;
+  final bool deviceFlowEnabled;
+  final String? deviceStartUrl;
+  final String? deviceStatusUrl;
+  final int pollIntervalSeconds;
+  final int sessionTimeoutSeconds;
+
+  bool get canUseDeviceFlow =>
+      enabled &&
+      deviceFlowEnabled &&
+      deviceStartUrl != null &&
+      deviceStartUrl!.trim().isNotEmpty &&
+      deviceStatusUrl != null &&
+      deviceStatusUrl!.trim().isNotEmpty;
 
   factory AuthCloudConfig.fromMap(Map<String, dynamic> map) {
     final parsedProviders = <AuthProviderCloudConfig>[];
@@ -103,9 +121,18 @@ class AuthCloudConfig {
         parsedProviders.add(AuthProviderCloudConfig.fromMap(item));
       }
     }
+    final rawStartUrl = map['device_start_url']?.toString();
+    final rawStatusUrl = map['device_status_url']?.toString();
     return AuthCloudConfig(
       enabled: map['enabled'] as bool? ?? false,
       providers: parsedProviders,
+      deviceFlowEnabled: map['device_flow_enabled'] as bool? ?? false,
+      deviceStartUrl:
+          (rawStartUrl == null || rawStartUrl.trim().isEmpty) ? null : rawStartUrl,
+      deviceStatusUrl:
+          (rawStatusUrl == null || rawStatusUrl.trim().isEmpty) ? null : rawStatusUrl,
+      pollIntervalSeconds: _toInt(map['poll_interval_seconds'], 3),
+      sessionTimeoutSeconds: _toInt(map['session_timeout_seconds'], 240),
     );
   }
 }
@@ -270,7 +297,11 @@ class AppCloudConfig {
   factory AppCloudConfig.disabled() {
     return const AppCloudConfig(
       backendKind: CloudBackendKind.disabled,
-      auth: AuthCloudConfig(enabled: false, providers: <AuthProviderCloudConfig>[]),
+      auth: AuthCloudConfig(
+        enabled: false,
+        providers: <AuthProviderCloudConfig>[],
+        deviceFlowEnabled: false,
+      ),
       diagnostics: DiagnosticsCloudConfig(
         enabled: false,
         uploadWithUserConsent: false,

@@ -36,10 +36,37 @@ Query params:
 Behavior:
 - Generates short-lived auth ticket (5 minutes).
 - Does not expose or store raw OAuth token exchange output.
+- If `state` matches a device-auth session, marks it completed/failed.
 
 ## `GET /auth/ticket?ticket=...`
 
 Returns callback metadata for short-lived ticket.
+
+## `POST /auth/device/start`
+
+Starts device authorization session for client polling flow.
+
+Request body:
+
+```json
+{
+  "provider": "google",
+  "external_auth_url": "https://example.com/oauth/start"
+}
+```
+
+Behavior:
+- Creates short-lived session id.
+- Builds provider URL with `state=<session_id>` when possible.
+- Returns `auth_url` for browser login.
+
+## `GET /auth/device/status?session_id=...`
+
+Returns status of device auth session:
+- `pending`
+- `completed`
+- `failed`
+- `expired`
 
 ## `POST /auth/telegram/verify`
 
@@ -54,6 +81,9 @@ Response includes:
 - `provider`
 - hashed `subject`
 - `auth_age_sec`
+
+Optional input:
+- `state` (if provided and matches active device session, marks session completed)
 
 ## `POST /diagnostics/ingest`
 
@@ -82,3 +112,4 @@ Useful as a lightweight profile update source for app clients.
 - `AUTH_SUBJECT_SALT`
 - `DIAGNOSTICS_INGEST_API_KEY` (optional)
 - `APP_REDIRECT_BASE` (optional hint for auth callback redirect)
+- `AUTH_DEVICE_SESSION_TTL_SEC` (default `300`)

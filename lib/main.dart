@@ -110,10 +110,14 @@ class _MyAppState extends State<MyApp> {
     }
   }
 
-  void _startAuthFlow(AuthProviderType provider) {
-    final result = authController.beginSignIn(provider);
+  Future<void> _startAuthFlow(AuthProviderType provider) async {
+    final result = await authController.beginSignIn(provider);
+    final authUrl = result.externalAuthUrl ??
+        authController.pendingExternalAuthUrl.value;
     authFlowStatus.value = result.ok
-        ? '${result.message}. URL: ${result.externalAuthUrl}'
+        ? authUrl == null || authUrl.isEmpty
+            ? result.message
+            : '${result.message}. URL: $authUrl'
         : result.message;
   }
 

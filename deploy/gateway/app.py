@@ -21,7 +21,7 @@ import time
 import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
 
 HOST = os.getenv("GATEWAY_HOST", "0.0.0.0")
@@ -33,6 +33,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 SUBJECT_SALT = os.getenv("AUTH_SUBJECT_SALT", "change-me").strip()
 DIAGNOSTICS_API_KEY = os.getenv("DIAGNOSTICS_INGEST_API_KEY", "").strip()
 APP_REDIRECT_BASE = os.getenv("APP_REDIRECT_BASE", "").strip()
+AUTH_DEVICE_SESSION_TTL_SEC = int(os.getenv("AUTH_DEVICE_SESSION_TTL_SEC", "300"))
 
 DIAGNOSTICS_DIR = DATA_DIR / "diagnostics"
 PROFILE_DIR = DATA_DIR / "profiles"
@@ -40,6 +41,8 @@ PROFILE_MANIFEST_PATH = PROFILE_DIR / "manifest.json"
 
 _ticket_store_lock = threading.Lock()
 _auth_ticket_store: dict[str, dict[str, object]] = {}
+_device_session_store_lock = threading.Lock()
+_device_session_store: dict[str, dict[str, object]] = {}
 
 PII_KEYS = {
     "email",
@@ -162,6 +165,100 @@ def get_auth_ticket(ticket: str):
         return record
 
 
+def _with_query(base_url: str, params: dict[str, str]) -> str:
+    parsed = urlparse(base_url)
+    query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    query = dict(query_pairs)
+    query.update(params)
+    next_query = urlencode(query)
+    return urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            next_query,
+            parsed.fragment,
+        )
+    )
+
+
+def _start_device_session(provider: str, external_auth_url: str | None) -> dict[str, object]:
+    session_id = str(uuid.uuid4())
+    created_at_unix = int(time.time())
+    expires_at_unix = created_at_unix + AUTH_DEVICE_SESSION_TTL_SEC
+
+    normalized_provider = (provider or "unknown").strip().lower()
+    auth_url = ""
+    if external_auth_url and external_auth_url.strip():
+        auth_url = _with_query(
+            external_auth_url.strip(),
+            {
+                "provider": normalized_provider,
+                "state": session_id,
+            },
+        )
+    else:
+        auth_url = f"/auth/callback?provider={normalized_provider}&state={session_id}&code=demo"
+
+    record: dict[str, object] = {
+        "session_id": session_id,
+        "provider": normalized_provider,
+        "status": "pending",
+        "created_at_utc": utc_now_iso(),
+        "created_at_unix": created_at_unix,
+        "expires_at_unix": expires_at_unix,
+        "auth_url": auth_url,
+        "subject": "",
+        "error": "",
+        "updated_at_utc": utc_now_iso(),
+    }
+    with _device_session_store_lock:
+        _device_session_store[session_id] = record
+    return record
+
+
+def _get_device_session(session_id: str) -> dict[str, object] | None:
+    with _device_session_store_lock:
+        record = _device_session_store.get(session_id)
+        if record is None:
+            return None
+        now_unix = int(time.time())
+        expires_at_unix = int(record.get("expires_at_unix", 0))
+        if now_unix > expires_at_unix and str(record.get("status", "")) == "pending":
+            record["status"] = "expired"
+            record["error"] = "session expired"
+            record["updated_at_utc"] = utc_now_iso()
+        return dict(record)
+
+
+def _update_device_session_from_event(
+    *,
+    session_id: str,
+    provider: str,
+    ok: bool,
+    error: str | None,
+    subject: str,
+) -> bool:
+    with _device_session_store_lock:
+        record = _device_session_store.get(session_id)
+        if record is None:
+            return False
+
+        if int(record.get("expires_at_unix", 0)) < int(time.time()):
+            record["status"] = "expired"
+            record["error"] = "session expired"
+            record["updated_at_utc"] = utc_now_iso()
+            return False
+
+        record["provider"] = provider
+        record["status"] = "completed" if ok else "failed"
+        record["subject"] = subject
+        record["error"] = error or ""
+        record["updated_at_utc"] = utc_now_iso()
+        return True
+
+
 def verify_telegram_payload(payload: dict) -> tuple[bool, str]:
     incoming_hash = payload.get("hash")
     if not isinstance(incoming_hash, str) or not incoming_hash:
@@ -253,7 +350,18 @@ class GatewayHandler(BaseHTTPRequestHandler):
             code = str(query.get("code", [""])[0])
             state = str(query.get("state", [""])[0])
             error = str(query.get("error", [""])[0]) or None
+            subject_seed = code or state or str(uuid.uuid4())
+            subject = hash_subject(provider, subject_seed)
             ticket = add_auth_ticket(provider=provider, had_code=bool(code), error=error)
+
+            if state:
+                _update_device_session_from_event(
+                    session_id=state,
+                    provider=provider,
+                    ok=(error is None and bool(code)),
+                    error=error,
+                    subject=subject,
+                )
 
             response = {
                 "ok": error is None,
@@ -262,6 +370,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 "code_received": bool(code),
                 "state_received": bool(state),
                 "error": error,
+                "subject": subject,
                 "expires_in_sec": 300,
             }
             if APP_REDIRECT_BASE:
@@ -296,6 +405,37 @@ class GatewayHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/auth/device/status":
+            session_id = str(query.get("session_id", [""])[0]).strip()
+            if not session_id:
+                self._json_response(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": "session_id query parameter is required"},
+                )
+                return
+
+            session_record = _get_device_session(session_id)
+            if session_record is None:
+                self._json_response(
+                    HTTPStatus.NOT_FOUND,
+                    {"ok": False, "error": "session not found"},
+                )
+                return
+
+            self._json_response(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "session_id": session_id,
+                    "provider": session_record.get("provider"),
+                    "status": session_record.get("status"),
+                    "subject": session_record.get("subject"),
+                    "error": session_record.get("error"),
+                    "message": "session status",
+                },
+            )
+            return
+
         if path == "/profiles/manifest":
             if not PROFILE_MANIFEST_PATH.exists():
                 self._json_response(
@@ -326,6 +466,43 @@ class GatewayHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
 
+        if path == "/auth/device/start":
+            try:
+                payload = parse_json_body(self)
+            except ValueError as exc:
+                self._json_response(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": str(exc)},
+                )
+                return
+
+            if not isinstance(payload, dict):
+                self._json_response(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": "JSON body must be an object"},
+                )
+                return
+
+            provider = str(payload.get("provider", "unknown")).strip().lower()
+            external_auth_url = str(payload.get("external_auth_url", "")).strip()
+            session_record = _start_device_session(
+                provider=provider,
+                external_auth_url=external_auth_url,
+            )
+            self._json_response(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "message": "device auth session started",
+                    "session_id": session_record["session_id"],
+                    "provider": session_record["provider"],
+                    "status": session_record["status"],
+                    "auth_url": session_record["auth_url"],
+                    "expires_in_sec": AUTH_DEVICE_SESSION_TTL_SEC,
+                },
+            )
+            return
+
         if path == "/auth/telegram/verify":
             try:
                 payload = parse_json_body(self)
@@ -352,6 +529,15 @@ class GatewayHandler(BaseHTTPRequestHandler):
             subject = hash_subject("telegram", raw_user_id)
             auth_date = int(payload.get("auth_date"))
             age_sec = int(time.time()) - auth_date
+            session_state = str(payload.get("state", "")).strip()
+            if session_state:
+                _update_device_session_from_event(
+                    session_id=session_state,
+                    provider="telegram",
+                    ok=True,
+                    error=None,
+                    subject=subject,
+                )
 
             self._json_response(
                 HTTPStatus.OK,
