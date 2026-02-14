@@ -1,0 +1,132 @@
+{
+  "backend_kind": "custom_webhook",
+  "auth": {
+    "enabled": true,
+    "device_flow_enabled": true,
+    "remember_session": true,
+    "session_ttl_minutes": 43200,
+    "reauth_prompt_minutes": 1440,
+    "session_check_interval_seconds": 30,
+    "device_start_url": "http://backlight.local/auth/device/start",
+    "device_status_url": "http://backlight.local/auth/device/status",
+    "poll_interval_seconds": 3,
+    "session_timeout_seconds": 240,
+    "providers": [
+      {
+        "provider": "google",
+        "enabled": true,
+        "display_name": "Google",
+        "oauth_start_url": "",
+        "notes": "Set OAuth entrypoint from Supabase/Firebase/Cloudflare gateway"
+      },
+      {
+        "provider": "microsoft",
+        "enabled": true,
+        "display_name": "Microsoft",
+        "oauth_start_url": "",
+        "notes": "Set OAuth entrypoint from Supabase/Firebase/Cloudflare gateway"
+      },
+      {
+        "provider": "yandex",
+        "enabled": true,
+        "display_name": "Yandex",
+        "oauth_start_url": "",
+        "notes": "Use OIDC/OAuth custom provider through gateway"
+      },
+      {
+        "provider": "telegram",
+        "enabled": true,
+        "display_name": "Telegram",
+        "oauth_start_url": "",
+        "notes": "Supports bot deep-link + one-time code flow (no fixed public callback required)"
+      },
+      {
+        "provider": "github",
+        "enabled": true,
+        "display_name": "GitHub",
+        "oauth_start_url": "",
+        "notes": "Good conversion for developer audience"
+      },
+      {
+        "provider": "apple",
+        "enabled": false,
+        "display_name": "Apple",
+        "oauth_start_url": "",
+        "notes": "Enable for iOS-focused rollout"
+      },
+      {
+        "provider": "vk",
+        "enabled": false,
+        "display_name": "VK",
+        "oauth_start_url": "",
+        "notes": "Regional provider option"
+      },
+      {
+        "provider": "discord",
+        "enabled": false,
+        "display_name": "Discord",
+        "oauth_start_url": "",
+        "notes": "Gaming/tech audience option"
+      },
+      {
+        "provider": "email_magic_link",
+        "enabled": false,
+        "display_name": "Email magic link",
+        "oauth_start_url": "",
+        "notes": "Low-friction passwordless option"
+      },
+      {
+        "provider": "phone_otp",
+        "enabled": false,
+        "display_name": "Phone OTP",
+        "oauth_start_url": "",
+        "notes": "Enable only if OTP economics and legal requirements fit"
+      },
+      {
+        "provider": "passkey",
+        "enabled": false,
+        "display_name": "Passkey",
+        "oauth_start_url": "",
+        "notes": "Use with WebAuthn-capable backend"
+      },
+      {
+        "provider": "anonymous_guest",
+        "enabled": false,
+        "display_name": "Guest mode (disabled)",
+        "oauth_start_url": "",
+        "notes": "Disabled by product policy: authentication is required"
+      }
+    ]
+  },
+  "diagnostics": {
+    "enabled": true,
+    "upload_with_user_consent": true,
+    "upload_url": "",
+    "api_key_header": "",
+    "api_key_value": "",
+    "timeout_seconds": 12
+  },
+  "profile_registry": {
+    "remote_manifest_url": "",
+    "refresh_minutes": 120,
+    "signed_manifest_required": false,
+    "manifest_public_key_b64": ""
+  },
+  "ads": {
+    "enabled": false,
+    "provider": "admob",
+    "non_personalized_only": true,
+    "consent_required": false,
+    "banner_unit_id": "ca-app-pub-3940256099942544/6300978111",
+    "interstitial_unit_id": "",
+    "rewarded_unit_id": "",
+    "min_interval_seconds": 90
+  },
+  "anonymous_analytics": {
+    "enabled": true,
+    "collect_usage_events": true,
+    "collect_crash_signals": true,
+    "sample_rate_percent": 25,
+    "endpoint_url": ""
+  }
+}

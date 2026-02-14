@@ -1,0 +1,65 @@
+services:
+  gateway:
+    build:
+      context: ./gateway
+    container_name: backlight-gateway
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      QUICK_TUNNEL_LOG_PATH: /runtime/cloudflared.log
+    volumes:
+      - backlight_data:/data
+      - backlight_runtime:/runtime:ro
+    ports:
+      - "127.0.0.1:${GATEWAY_BIND_PORT:-18080}:8080"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: backlight-caddy
+    restart: unless-stopped
+    environment:
+      LOCAL_DASHBOARD_NAME: ${LOCAL_DASHBOARD_NAME:-backlight}
+    depends_on:
+      gateway:
+        condition: service_healthy
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "${LAN_BIND_IP:-0.0.0.0}:${CADDY_BIND_PORT:-80}:80"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: backlight-cloudflared
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    depends_on:
+      - caddy
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN}
+
+  cloudflared-quick:
+    image: cloudflare/cloudflared:latest
+    container_name: backlight-cloudflared-quick
+    restart: unless-stopped
+    profiles: ["quicktunnel"]
+    depends_on:
+      - caddy
+    volumes:
+      - backlight_runtime:/runtime
+    command: tunnel --no-autoupdate --url http://caddy:80 --logfile /runtime/cloudflared.log
+
+volumes:
+  backlight_data:
+  backlight_runtime:

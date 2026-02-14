@@ -1,0 +1,16 @@
+services:
+  hil-agent:
+    image: python:3.12-alpine
+    container_name: backlight-hil-agent
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
+    volumes:
+      - /dev:/dev
+      - backlight_data:/data
+    command:
+      [
+        "python",
+        "-c",
+        "import time,datetime; print('HIL agent started', flush=True); [print(datetime.datetime.utcnow().isoformat(), 'HIL heartbeat', flush=True) or time.sleep(30) for _ in iter(int,1)]",
+      ]

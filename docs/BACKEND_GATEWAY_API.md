@@ -1,0 +1,235 @@
+# Headless Gateway API (Self-Hosted)
+
+This gateway is implemented in `deploy/gateway/app.py` and is designed for low-resource deployments.
+
+## Security and privacy defaults
+
+- No external dependencies.
+- PII-like keys are redacted from diagnostics payloads before persistence.
+- OAuth callback endpoint avoids logging query secrets.
+- Telegram verification returns hashed subject, not raw Telegram profile data.
+- Local web console endpoints are restricted to local-network clients.
+
+## Endpoints
+
+## `GET /ui`
+
+Local web console for headless setup and product dashboard.
+
+Access policy:
+- allowed only from local/private/link-local/loopback networks
+- expected local URL: `http://<name>.local`
+
+## `GET /ui/api/status`
+
+Returns setup checklist, runtime status, and auth/diagnostics metrics.
+
+When quick tunnel is enabled, response also includes:
+- current temporary public URL (`public_base_url`)
+- expected Google redirect hint (`google_redirect_hint`)
+- redirect auto-follow flag (`google_auto_redirect_from_public_url`)
+
+## `GET /ui/api/metrics`
+
+Returns aggregated product KPIs for dashboard cards (windowed metrics, auth funnel, top events).
+
+Notes:
+- endpoint is local-only (same policy as `/ui/api/status`)
+- metrics are aggregated from anonymous analytics batches and auth session state
+- payload includes `kpi`, `analytics`, and `auth_sessions` blocks
+
+## `POST /ui/api/config/google`
+
+Updates runtime auth config (Google + Telegram) and dashboard local-name settings.
+
+## `GET /health`
+
+Returns service status and UTC time.
+
+Example response:
+
+```json
+{
+  "ok": true,
+  "service": "gateway",
+  "time_utc": "2026-02-14T12:34:56.000000+00:00"
+}
+```
+
+## `GET /auth/callback`
+
+Query params:
+- `provider` (optional)
+- `code` (optional)
+- `state` (optional)
+- `error` (optional)
+
+Behavior:
+- Generates short-lived auth ticket (5 minutes).
+- Does not expose or store raw OAuth token exchange output.
+- If `state` matches a device-auth session, marks it completed/failed.
+
+## `GET /auth/ticket?ticket=...`
+
+Returns callback metadata for short-lived ticket.
+
+## `POST /auth/device/start`
+
+Starts device authorization session for client polling flow.
+
+Request body:
+
+```json
+{
+  "provider": "google",
+  "external_auth_url": "https://example.com/oauth/start"
+}
+```
+
+Behavior:
+- Creates short-lived session id.
+- Builds provider URL with `state=<session_id>` when possible.
+- Returns `auth_url` for browser login.
+
+## `GET /auth/device/status?session_id=...`
+
+Returns status of device auth session:
+- `pending`
+- `completed`
+- `failed`
+- `expired`
+
+## `GET /auth/google/start`
+
+Starts Google OAuth flow.
+
+Query params:
+- `state` (optional, if omitted generated automatically)
+- `mode=json` (optional; returns auth URL JSON instead of redirect)
+
+## `GET /auth/google/callback`
+
+Handles Google OAuth callback:
+- exchanges authorization code
+- verifies ID token (`tokeninfo`)
+- maps user to anonymous hashed subject
+- updates device session when `state` is present
+
+## `GET /auth/telegram/start?state=...`
+
+Renders Telegram sign-in helper page for device flow session.
+
+Behavior:
+- shows one-time login code
+- provides direct `t.me/<bot>?start=login_<code>` link
+- polls `/auth/device/status` until completed/failed
+
+## `POST /auth/telegram/verify`
+
+Accepts Telegram Login Widget payload JSON and validates hash using `TELEGRAM_BOT_TOKEN`.
+
+Required payload fields include:
+- `id`
+- `auth_date`
+- `hash`
+
+Response includes:
+- `provider`
+- hashed `subject`
+- `auth_age_sec`
+
+Optional input:
+- `state` (if provided and matches active device session, marks session completed)
+
+Additional Telegram device flow behavior:
+- gateway can poll Telegram Bot API `getUpdates`
+- `/start login_<code>` message in bot completes pending session without fixed public callback URL
+
+## `POST /diagnostics/ingest`
+
+Accepts JSON diagnostics payload.
+
+Optional protection:
+- `X-API-Key` header when `DIAGNOSTICS_INGEST_API_KEY` is configured.
+
+Storage:
+- Files are written under `/data/diagnostics/YYYY-MM-DD/<event_id>.json`
+
+## `POST /analytics/ingest`
+
+Accepts anonymous analytics batch payload from app runtime.
+
+Expected body shape:
+
+```json
+{
+  "schema": "anonymous_analytics_v1",
+  "events": [
+    {
+      "name": "usage.app_start",
+      "timestamp_utc": "2026-02-14T12:00:00Z",
+      "params": {
+        "backend": "customWebhook"
+      }
+    }
+  ]
+}
+```
+
+Optional protection:
+- `X-API-Key` header when `ANALYTICS_INGEST_API_KEY` is configured.
+
+Storage:
+- Files are written under `/data/analytics/YYYY-MM-DD/<timestamp>_<batch_id>.json`
+
+## `GET /profiles/manifest`
+
+Serves optional profile manifest from:
+- `/data/profiles/manifest.json`
+
+Useful as a lightweight profile update source for app clients.
+
+Recommended signed envelope format for production clients:
+
+```json
+{
+  "algorithm": "ed25519",
+  "key_id": "v1",
+  "payload_b64": "<base64-encoded JSON payload>",
+  "signature_b64": "<base64-encoded Ed25519 signature of payload bytes>"
+}
+```
+
+Client profile-registry config supports:
+- `signed_manifest_required` (boolean)
+- `manifest_public_key_b64` (Ed25519 public key, base64)
+
+## Environment variables
+
+- `GATEWAY_HOST` (default `0.0.0.0`)
+- `GATEWAY_PORT` (default `8080`)
+- `DATA_DIR` (default `/data`)
+- `MAX_BODY_BYTES` (default `1048576`)
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_BOT_USERNAME` (without `@`)
+- `TELEGRAM_AUTH_ENABLED` (default auto when token+username are set)
+- `AUTH_SUBJECT_SALT`
+- `DIAGNOSTICS_INGEST_API_KEY` (optional)
+- `ANALYTICS_INGEST_API_KEY` (optional)
+- `ANALYTICS_MAX_EVENTS_PER_REQUEST` (default `250`)
+- `METRICS_WINDOW_HOURS` (default `24`)
+- `METRICS_CACHE_TTL_SEC` (default `10`)
+- `METRICS_MAX_FILES_SCANNED` (default `5000`)
+- `APP_REDIRECT_BASE` (optional hint for auth callback redirect)
+- `AUTH_DEVICE_SESSION_TTL_SEC` (default `300`)
+- `LOCAL_DASHBOARD_NAME` (default `backlight`)
+- `GOOGLE_AUTH_ENABLED`
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `GOOGLE_REDIRECT_URI`
+- `GOOGLE_AUTO_REDIRECT_FROM_PUBLIC_URL` (default `true`)
+- `GOOGLE_SCOPE` (default `openid email profile`)
+- `GOOGLE_PROMPT` (default `consent`)
+- `GOOGLE_ALLOWED_DOMAIN` (optional)
+- `GOOGLE_REQUIRE_VERIFIED_EMAIL` (default `true`)
+- `QUICK_TUNNEL_LOG_PATH` (default `/runtime/cloudflared.log`)

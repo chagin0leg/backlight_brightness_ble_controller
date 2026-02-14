@@ -1,0 +1,15 @@
+[Unit]
+Description=Backlight BLE stack via Docker Compose
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/backlight-stack/deploy
+ExecStart=/usr/bin/bash /opt/backlight-stack/deploy/run-stack.sh
+ExecStop=/usr/bin/bash /opt/backlight-stack/deploy/stop-stack.sh
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
