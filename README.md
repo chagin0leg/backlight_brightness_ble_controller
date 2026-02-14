@@ -21,6 +21,8 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
+After build completion, artifacts are attached to the corresponding GitHub Release for that tag.
+
 ## Product roadmap
 
 The current product roadmap and implementation checklist are tracked in:

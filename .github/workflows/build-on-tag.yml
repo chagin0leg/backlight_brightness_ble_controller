@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: build-${{ github.ref }}
@@ -74,11 +74,14 @@ jobs:
       - name: Build Linux bundle
         run: flutter build linux --release
 
+      - name: Pack Linux artifact
+        run: tar -czf build/linux/linux-release.tar.gz -C build/linux/x64/release bundle
+
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
           name: linux-bundle-${{ github.ref_name }}
-          path: build/linux/x64/release/bundle
+          path: build/linux/linux-release.tar.gz
           if-no-files-found: error
 
   build-windows:
@@ -113,3 +116,38 @@ jobs:
           name: windows-bundle-${{ github.ref_name }}
           path: build/windows/windows-release.zip
           if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release assets
+    needs:
+      - build-android
+      - build-linux
+      - build-windows
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Show downloaded files
+        run: |
+          python - <<'PY'
+          import pathlib
+          root = pathlib.Path("dist")
+          for path in sorted(root.rglob("*")):
+              if path.is_file():
+                  print(path)
+          PY
+
+      - name: Create or update GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/**/app-release.apk
+            dist/**/linux-release.tar.gz
+            dist/**/windows-release.zip
