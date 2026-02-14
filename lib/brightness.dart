@@ -1,41 +1,36 @@
-import 'dart:io';
 import 'dart:async';
-import 'dart:convert';
-import 'dart:developer';
+
+import 'package:backlight_brightness_ble_controller/core/brightness/brightness_provider.dart';
+import 'package:backlight_brightness_ble_controller/core/brightness/platform_brightness_provider.dart';
 import 'package:get/get.dart';
 
 class BrightnessController extends GetxController {
-  Rx<int?> value = null.obs;
+  BrightnessController({BrightnessProvider? provider})
+      : _provider = provider ?? PlatformBrightnessProviderFactory.create();
+
+  final BrightnessProvider _provider;
+  final RxnInt value = RxnInt();
+  final RxString providerLabel = ''.obs;
   Timer? _timer;
 
   @override
   void onInit() {
     super.onInit();
-    _timer = Timer.periodic(const Duration(seconds: 1),
-        (t) async => value = (await _getMonitorBrightness()).obs);
+    providerLabel.value = _provider.sourceDescription;
+    _pollBrightness();
+    _timer = Timer.periodic(
+      const Duration(seconds: 1),
+      (timer) => _pollBrightness(),
+    );
   }
 
-  Future<int?> _getMonitorBrightness() async {
-    try {
-      final process = await Process.start(
-        'powershell',
-        [
-          '(Get-WmiObject -Namespace root/WMI -Class WmiMonitorBrightness).CurrentBrightness'
-        ],
-      );
-      final output = await process.stdout.transform(utf8.decoder).join();
-      final brightness = int.tryParse(output.trim());
-      if (brightness == null) throw ('Error parsing the received value');
-      return brightness;
-    } catch (e) {
-      log('Error getting monitor brightness: $e');
-      return null;
-    }
+  Future<void> _pollBrightness() async {
+    value.value = await _provider.getBrightness();
   }
 
   @override
-  void dispose() {
+  void onClose() {
     _timer?.cancel();
-    super.dispose();
+    super.onClose();
   }
 }

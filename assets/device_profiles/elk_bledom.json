@@ -1,0 +1,39 @@
+{
+  "id": "elk-bledom-default",
+  "label": "ELK-BLEDOM",
+  "vendor": "Unknown",
+  "capabilities": [
+    "power",
+    "brightness",
+    "rgb"
+  ],
+  "fingerprint": {
+    "name_contains": [
+      "ELK-BLEDOM"
+    ],
+    "service_uuids": [
+      "0000fff0-0000-1000-8000-00805f9b34fb"
+    ],
+    "characteristic_uuids": [
+      "0000fff3-0000-1000-8000-00805f9b34fb"
+    ]
+  },
+  "brightness_command": {
+    "service_uuid": "0000fff0-0000-1000-8000-00805f9b34fb",
+    "characteristic_uuid": "0000fff3-0000-1000-8000-00805f9b34fb",
+    "base_payload": [
+      126,
+      4,
+      1,
+      128,
+      255,
+      0,
+      0,
+      239
+    ],
+    "value_byte_index": 3,
+    "min_value": 1,
+    "max_value": 255,
+    "write_with_response": false
+  }
+}
