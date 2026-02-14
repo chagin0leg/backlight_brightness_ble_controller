@@ -1,0 +1,48 @@
+{
+  "backend_kind": "custom_webhook",
+  "auth": {
+    "enabled": true,
+    "providers": [
+      {
+        "provider": "google",
+        "enabled": true,
+        "display_name": "Google",
+        "oauth_start_url": "",
+        "notes": "Set OAuth entrypoint from Supabase/Firebase/Cloudflare gateway"
+      },
+      {
+        "provider": "microsoft",
+        "enabled": true,
+        "display_name": "Microsoft",
+        "oauth_start_url": "",
+        "notes": "Set OAuth entrypoint from Supabase/Firebase/Cloudflare gateway"
+      },
+      {
+        "provider": "yandex",
+        "enabled": true,
+        "display_name": "Yandex",
+        "oauth_start_url": "",
+        "notes": "Use OIDC/OAuth custom provider through gateway"
+      },
+      {
+        "provider": "telegram",
+        "enabled": true,
+        "display_name": "Telegram",
+        "oauth_start_url": "",
+        "notes": "Requires serverless signature/hash verification"
+      }
+    ]
+  },
+  "diagnostics": {
+    "enabled": true,
+    "upload_with_user_consent": true,
+    "upload_url": "",
+    "api_key_header": "",
+    "api_key_value": "",
+    "timeout_seconds": 12
+  },
+  "profile_registry": {
+    "remote_manifest_url": "",
+    "refresh_minutes": 120
+  }
+}

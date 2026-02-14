@@ -80,6 +80,7 @@ flutter:
   assets:
     - assets/AppIcon.drawio.png
     - assets/device_profiles/
+    - assets/runtime/
   #   - images/a_dot_burr.jpeg
   #   - images/a_dot_ham.jpeg
 

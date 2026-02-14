@@ -14,6 +14,8 @@ This document captures the agreed scope for turning the project into a productio
 - Keep the UI simple by default and adaptive to device capabilities.
 - Add a diagnostics pipeline for unsupported devices.
 - Make new device support distributable to all users without app reinstallation.
+- Avoid dedicated servers; rely on free-tier managed/serverless infrastructure.
+- Support broad sign-in options (Google, Microsoft, Yandex, Telegram, others where feasible).
 
 ## Phase 0: Foundation (current iteration)
 
@@ -64,6 +66,18 @@ This document captures the agreed scope for turning the project into a productio
 - [ ] Upload diagnostics to profile backend.
 - [ ] Generate profile drafts from diagnostics (human-reviewed).
 - [ ] Publish validated profiles to all users via profile updates.
+
+## Phase 3.5: Authentication and free cloud setup
+
+- [ ] Add cloud configuration model for no-dedicated-server deployments.
+- [ ] Add authentication provider abstraction and UI hooks.
+- [ ] Wire provider entries for:
+  - [ ] Google
+  - [ ] Microsoft
+  - [ ] Yandex
+  - [ ] Telegram
+- [ ] Add serverless diagnostics upload path (Cloudflare/Supabase/Firebase webhook).
+- [ ] Add profile registry remote manifest update flow.
 
 ## Phase 4: Cross-platform implementation matrix
 

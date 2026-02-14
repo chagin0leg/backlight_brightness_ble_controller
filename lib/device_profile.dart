@@ -1,5 +1,3 @@
-import 'dart:math';
-
 enum DeviceCapability {
   power,
   brightness,

@@ -7,6 +7,7 @@ A Flutter pet-project for control BLE LED-strip from dependencies of desktop dis
 The current product roadmap and implementation checklist are tracked in:
 
 - `docs/PRODUCT_ROADMAP.md`
+- `docs/FREE_INFRA_AND_AUTH.md`
 
 ## Application Icon
 

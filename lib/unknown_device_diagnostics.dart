@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:developer';
 import 'dart:io';
 
+import 'package:backlight_brightness_ble_controller/cloud/unknown_device_report_uploader.dart';
+
 class UnknownDeviceSnapshot {
   UnknownDeviceSnapshot({
     required this.createdAtUtc,
@@ -40,18 +42,33 @@ class UnknownDeviceSnapshot {
   }
 }
 
+class UnknownDeviceSaveResult {
+  const UnknownDeviceSaveResult({
+    required this.localPath,
+    this.uploadResult,
+  });
+
+  final String? localPath;
+  final UnknownDeviceReportUploadResult? uploadResult;
+}
+
 class UnknownDeviceDiagnosticsCollector {
-  UnknownDeviceDiagnosticsCollector({this.folderName = 'backlight_ble_diagnostics'});
+  UnknownDeviceDiagnosticsCollector({
+    this.folderName = 'backlight_ble_diagnostics',
+    this.uploader,
+  });
 
   final String folderName;
+  UnknownDeviceReportUploader? uploader;
 
-  Future<String?> saveSnapshot({
+  Future<UnknownDeviceSaveResult> saveSnapshot({
     required String deviceName,
     required String deviceAddress,
     required List<String> services,
     required List<String> characteristics,
     required double matchScore,
     required List<String> matchReasons,
+    bool uploadIfConfigured = true,
     String? errorMessage,
   }) async {
     try {
@@ -76,12 +93,22 @@ class UnknownDeviceDiagnosticsCollector {
           snapshot.createdAtUtc.toIso8601String().replaceAll(':', '-');
       final fileName = 'unknown_device_$timestamp.json';
       final file = File('${directory.path}${Platform.pathSeparator}$fileName');
-      final json = const JsonEncoder.withIndent('  ').convert(snapshot.toMap());
+      final payload = snapshot.toMap();
+      final json = const JsonEncoder.withIndent('  ').convert(payload);
       await file.writeAsString(json);
-      return file.path;
+
+      UnknownDeviceReportUploadResult? uploadResult;
+      if (uploadIfConfigured && uploader != null) {
+        uploadResult = await uploader!.upload(payload);
+      }
+
+      return UnknownDeviceSaveResult(
+        localPath: file.path,
+        uploadResult: uploadResult,
+      );
     } catch (error) {
       log('Unable to save unknown device diagnostics: $error');
-      return null;
+      return const UnknownDeviceSaveResult(localPath: null);
     }
   }
 

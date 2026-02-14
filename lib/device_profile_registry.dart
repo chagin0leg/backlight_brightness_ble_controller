@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:developer';
+import 'dart:io';
 
 import 'package:flutter/services.dart';
 
@@ -43,6 +44,52 @@ class DeviceProfileRegistry {
       } catch (error) {
         log('Failed to load profile asset $path: $error');
       }
+    }
+  }
+
+  Future<bool> loadFromRemoteManifest(String manifestUrl) async {
+    final uri = Uri.tryParse(manifestUrl);
+    if (uri == null) {
+      log('Remote profile manifest URL is invalid: $manifestUrl');
+      return false;
+    }
+
+    final client = HttpClient();
+    try {
+      final request = await client.getUrl(uri);
+      final response = await request.close();
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        log('Failed to load remote profile manifest: HTTP ${response.statusCode}');
+        return false;
+      }
+
+      final body = await response.transform(utf8.decoder).join();
+      final decoded = jsonDecode(body);
+      final parsedProfiles = <DeviceProfile>[];
+      if (decoded is Map<String, dynamic>) {
+        parsedProfiles.add(DeviceProfile.fromMap(decoded));
+      } else if (decoded is List<dynamic>) {
+        for (final item in decoded) {
+          if (item is Map<String, dynamic>) {
+            parsedProfiles.add(DeviceProfile.fromMap(item));
+          }
+        }
+      }
+
+      if (parsedProfiles.isEmpty) {
+        log('Remote profile manifest has no valid profiles');
+        return false;
+      }
+
+      _profiles
+        ..clear()
+        ..addAll(parsedProfiles);
+      return true;
+    } catch (error) {
+      log('Failed to fetch remote profile manifest: $error');
+      return false;
+    } finally {
+      client.close(force: true);
     }
   }
 

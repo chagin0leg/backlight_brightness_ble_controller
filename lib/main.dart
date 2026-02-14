@@ -2,6 +2,10 @@ import 'dart:async';
 import 'dart:developer';
 import 'dart:typed_data';
 
+import 'package:backlight_brightness_ble_controller/auth/auth_controller.dart';
+import 'package:backlight_brightness_ble_controller/auth/auth_provider.dart';
+import 'package:backlight_brightness_ble_controller/cloud/app_cloud_config.dart';
+import 'package:backlight_brightness_ble_controller/cloud/unknown_device_report_uploader.dart';
 import 'package:backlight_brightness_ble_controller/device_profile.dart';
 import 'package:backlight_brightness_ble_controller/device_profile_registry.dart';
 import 'package:flutter/material.dart';
@@ -13,13 +17,17 @@ import 'package:win_ble/win_file.dart';
 
 BleDevice? device;
 final RxString status = RxString('Disconnected');
+final RxString cloudStatus = RxString('Cloud config not loaded');
 final RxString profileStatus = RxString('Profile: not selected');
 final RxString diagnosticsStatus = RxString('');
+final RxString authFlowStatus = RxString('');
+final RxBool diagnosticsUploadConsent = false.obs;
 final RxList<String> services = <String>[].obs;
 final DeviceProfileRegistry deviceProfileRegistry = DeviceProfileRegistry();
 final UnknownDeviceDiagnosticsCollector diagnosticsCollector =
     UnknownDeviceDiagnosticsCollector();
 final Map<String, DateTime> unknownDeviceReportRateLimit = <String, DateTime>{};
+AppCloudConfig appCloudConfig = AppCloudConfig.disabled();
 DeviceProfile? activeProfile;
 int? lastSyncedBrightness;
 
@@ -41,16 +49,72 @@ class _MyAppState extends State<MyApp> {
   BleState bleState = BleState.Unknown;
   final BrightnessController brightnessController =
       Get.put(BrightnessController());
+  final AuthController authController = Get.put(AuthController());
 
   Timer? restart;
 
   Future<void> initialize() async {
+    status.value = 'Loading cloud configuration';
+    appCloudConfig = await AppCloudConfigLoader.load();
+    authController.configure(appCloudConfig);
+    _applyDiagnosticsCloudConfig(appCloudConfig);
+    cloudStatus.value = 'Cloud backend: ${_backendLabel(appCloudConfig.backendKind)}';
+
     status.value = 'Loading profiles';
     await deviceProfileRegistry.loadDefaultProfiles();
+    final remoteManifestUrl = appCloudConfig.profileRegistry.remoteManifestUrl;
+    if (remoteManifestUrl != null && remoteManifestUrl.isNotEmpty) {
+      status.value = 'Syncing remote profile registry';
+      final remoteLoaded =
+          await deviceProfileRegistry.loadFromRemoteManifest(remoteManifestUrl);
+      if (!remoteLoaded) {
+        diagnosticsStatus.value =
+            'Remote profile sync failed. Using local profile assets.';
+      }
+    }
     status.value = 'Initializing BLE';
     await WinBle.initialize(serverPath: await WinServer.path, enableLog: true);
     status.value = 'Scanning';
     WinBle.startScanning();
+  }
+
+  void _applyDiagnosticsCloudConfig(AppCloudConfig config) {
+    if (config.diagnostics.canUpload) {
+      diagnosticsCollector.uploader = HttpUnknownDeviceReportUploader(
+        endpointUrl: config.diagnostics.uploadUrl!,
+        apiKeyHeader: config.diagnostics.apiKeyHeader,
+        apiKeyValue: config.diagnostics.apiKeyValue,
+        timeout: Duration(seconds: config.diagnostics.timeoutSeconds),
+      );
+      diagnosticsStatus.value =
+          'Diagnostics uploader configured. Enable consent to upload.';
+      return;
+    }
+    diagnosticsCollector.uploader = null;
+    diagnosticsStatus.value =
+        'Diagnostics upload endpoint is not configured. Local snapshots only.';
+  }
+
+  String _backendLabel(CloudBackendKind kind) {
+    switch (kind) {
+      case CloudBackendKind.firebase:
+        return 'Firebase';
+      case CloudBackendKind.supabase:
+        return 'Supabase';
+      case CloudBackendKind.appwrite:
+        return 'Appwrite';
+      case CloudBackendKind.customWebhook:
+        return 'Custom webhook';
+      case CloudBackendKind.disabled:
+        return 'Disabled';
+    }
+  }
+
+  void _startAuthFlow(AuthProviderType provider) {
+    final result = authController.beginSignIn(provider);
+    authFlowStatus.value = result.ok
+        ? '${result.message}. URL: ${result.externalAuthUrl}'
+        : result.message;
   }
 
   @override
@@ -114,6 +178,49 @@ class _MyAppState extends State<MyApp> {
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
                 Text(status.value, textAlign: TextAlign.center),
+                const SizedBox(height: 8),
+                Text(cloudStatus.value, textAlign: TextAlign.center),
+                const SizedBox(height: 8),
+                Text(authController.status.value, textAlign: TextAlign.center),
+                if (authController.options.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 8),
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: authController.options
+                        .map(
+                          (option) => OutlinedButton(
+                            onPressed: option.enabled
+                                ? () => _startAuthFlow(option.provider)
+                                : null,
+                            child: Text(option.displayName),
+                          ),
+                        )
+                        .toList(growable: false),
+                  ),
+                ],
+                if (authFlowStatus.value.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 8),
+                  Text(
+                    authFlowStatus.value,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ],
+                const SizedBox(height: 8),
+                CheckboxListTile(
+                  value: diagnosticsUploadConsent.value,
+                  onChanged: (value) =>
+                      diagnosticsUploadConsent.value = value ?? false,
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  title: const Text(
+                    'Share unknown device diagnostics (opt-in)',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
                 const SizedBox(height: 8),
                 Text(profileStatus.value, textAlign: TextAlign.center),
                 const SizedBox(height: 8),
@@ -416,18 +523,32 @@ Future<void> captureUnknownDevice({
     return;
   }
 
-  final path = await diagnosticsCollector.saveSnapshot(
+  final saveResult = await diagnosticsCollector.saveSnapshot(
     deviceName: event.name,
     deviceAddress: event.address,
     services: services,
     characteristics: characteristics,
     matchScore: matchResult.score,
     matchReasons: matchResult.reasons,
+    uploadIfConfigured: diagnosticsUploadConsent.value,
     errorMessage: errorMessage,
   );
-  diagnosticsStatus.value = path == null
-      ? 'Unknown device detected. Failed to store diagnostics.'
-      : 'Unknown device diagnostics saved: $path';
+  if (saveResult.localPath == null) {
+    diagnosticsStatus.value =
+        'Unknown device detected. Failed to store diagnostics.';
+    return;
+  }
+
+  final uploadResult = saveResult.uploadResult;
+  if (uploadResult == null) {
+    diagnosticsStatus.value =
+        'Unknown device diagnostics saved locally: ${saveResult.localPath}';
+    return;
+  }
+
+  diagnosticsStatus.value = uploadResult.ok
+      ? 'Unknown diagnostics uploaded successfully (${uploadResult.statusCode ?? 0}).'
+      : 'Diagnostics saved locally (${saveResult.localPath}), upload failed: ${uploadResult.message}';
 }
 
 bool _shouldSaveUnknownReport(String deviceAddress) {
