@@ -31,6 +31,7 @@ This document is a plain status snapshot of what is already implemented versus w
 - Auth session storage now uses secure storage when available, with safe fallback for unsupported environments.
 - Main app screen now uses grouped sections (cloud/auth/device/diagnostics/ads) with clearer onboarding actions.
 - Basic AdMob banner runtime integration is implemented with platform-safe fallback.
+- Consent UX gate for non-personalized ads is implemented when required by cloud config.
 - Persistent app settings are implemented (poll interval, sync on/off, min/max output brightness, diagnostics consent, anonymous analytics toggle).
 - Preferred BLE device persistence and reconnect-focused scanning are implemented for Windows flow.
 - Anonymous analytics event schema and client queue/flush pipeline are implemented.
@@ -65,7 +66,7 @@ This document is a plain status snapshot of what is already implemented versus w
 - Cross-platform brightness providers are mostly stubs outside Windows.
 - Google OAuth E2E is implemented, but multi-provider production hardening is still pending.
 - Product-level visual polish and deeper settings/navigation UX are still pending.
-- Ads integration exists, but monetization tuning (placement strategy, frequency, consent UX) is pending.
+- Ads integration exists, but monetization tuning (placement strategy, frequency) is still pending.
 - Reconnect orchestration includes backoff retries and scan-timeout fallback, but still needs wider field tuning.
 - Basic automated tests and CI analyze/test workflow are added, but coverage is still early-stage.
 

@@ -80,6 +80,9 @@ class _MyAppState extends State<MyApp> {
     );
     await authController.configure(appCloudConfig);
     await adController.configure(appCloudConfig.ads);
+    await adController.updateConsent(
+      granted: settingsController.settings.value.adsConsentGranted,
+    );
     analyticsService.configure(
       config: appCloudConfig.anonymousAnalytics,
       userEnabled: settingsController.settings.value.anonymousAnalyticsEnabled,
@@ -615,6 +618,19 @@ class _MyAppState extends State<MyApp> {
           value: current.anonymousAnalyticsEnabled,
           onChanged: (value) => settingsController.setAnonymousAnalyticsEnabled(value),
         ),
+        if (appCloudConfig.ads.consentRequired) ...<Widget>[
+          SwitchListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            title: const Text('I consent to non-personalized ads'),
+            subtitle: const Text(
+              'Required in configured region before banner is shown',
+              style: TextStyle(fontSize: 12),
+            ),
+            value: current.adsConsentGranted,
+            onChanged: (value) => settingsController.setAdsConsentGranted(value),
+          ),
+        ],
         const SizedBox(height: 4),
         Text(
           hasPreferred
@@ -730,6 +746,7 @@ class _MyAppState extends State<MyApp> {
           settings.brightnessPollIntervalSeconds,
         );
         analyticsService.updateUserEnabled(settings.anonymousAnalyticsEnabled);
+        unawaited(adController.updateConsent(granted: settings.adsConsentGranted));
       },
     );
 

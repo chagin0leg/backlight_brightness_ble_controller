@@ -14,6 +14,8 @@ class AdController extends GetxController {
   bool _isLoading = false;
   bool _mobileAdsInitialized = false;
   bool _productValueReached = false;
+  bool _consentRequired = false;
+  bool _consentGranted = false;
   String? _bannerUnitId;
 
   Future<void> configure(AdsCloudConfig config) async {
@@ -32,6 +34,7 @@ class AdController extends GetxController {
       status.value = 'Configured ads provider is not implemented yet';
       return;
     }
+    _consentRequired = config.consentRequired;
 
     if (!_supportsMobileAdsRuntime()) {
       status.value =
@@ -50,6 +53,10 @@ class AdController extends GetxController {
       if (!_mobileAdsInitialized) {
         await MobileAds.instance.initialize();
         _mobileAdsInitialized = true;
+      }
+      if (_consentRequired && !_consentGranted) {
+        status.value = 'Ad consent is required before banner can be loaded';
+        return;
       }
       if (_productValueReached) {
         await _loadBanner(unitId);
@@ -72,6 +79,10 @@ class AdController extends GetxController {
           'Connect device first to unlock ads (delayed first ad policy)';
       return;
     }
+    if (_consentRequired && !_consentGranted) {
+      status.value = 'Ad consent is required before banner can be loaded';
+      return;
+    }
     await _loadBanner(unitId);
   }
 
@@ -89,7 +100,33 @@ class AdController extends GetxController {
       status.value = 'Ads pending initialization';
       return;
     }
+    if (_consentRequired && !_consentGranted) {
+      status.value = 'Ad consent is required before banner can be loaded';
+      return;
+    }
     status.value = 'Product value reached ($reason). Loading banner...';
+    await _loadBanner(unitId);
+  }
+
+  Future<void> updateConsent({required bool granted}) async {
+    _consentGranted = granted;
+    if (!_consentRequired) {
+      return;
+    }
+    if (!granted) {
+      _disposeBanner();
+      status.value = 'Ad consent not granted. Banner is disabled.';
+      return;
+    }
+    final unitId = _bannerUnitId;
+    if (unitId == null ||
+        unitId.trim().isEmpty ||
+        !_productValueReached ||
+        !_mobileAdsInitialized) {
+      status.value = 'Ad consent granted. Banner will load when prerequisites are met.';
+      return;
+    }
+    status.value = 'Ad consent granted. Loading banner...';
     await _loadBanner(unitId);
   }
 

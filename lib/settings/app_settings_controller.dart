@@ -40,6 +40,10 @@ class AppSettingsController extends GetxController {
     await _save(settings.value.copyWith(diagnosticsUploadConsent: enabled));
   }
 
+  Future<void> setAdsConsentGranted(bool enabled) async {
+    await _save(settings.value.copyWith(adsConsentGranted: enabled));
+  }
+
   Future<void> setAnonymousAnalyticsEnabled(bool enabled) async {
     await _save(settings.value.copyWith(anonymousAnalyticsEnabled: enabled));
   }

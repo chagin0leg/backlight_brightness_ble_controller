@@ -219,6 +219,7 @@ class AdsCloudConfig {
     required this.enabled,
     required this.provider,
     required this.nonPersonalizedOnly,
+    required this.consentRequired,
     this.bannerUnitId,
     this.interstitialUnitId,
     this.rewardedUnitId,
@@ -228,6 +229,7 @@ class AdsCloudConfig {
   final bool enabled;
   final AdsProviderKind provider;
   final bool nonPersonalizedOnly;
+  final bool consentRequired;
   final String? bannerUnitId;
   final String? interstitialUnitId;
   final String? rewardedUnitId;
@@ -240,6 +242,7 @@ class AdsCloudConfig {
         map['provider']?.toString() ?? 'disabled',
       ),
       nonPersonalizedOnly: _toBool(map['non_personalized_only'], true),
+      consentRequired: _toBool(map['consent_required'], false),
       bannerUnitId: map['banner_unit_id']?.toString(),
       interstitialUnitId: map['interstitial_unit_id']?.toString(),
       rewardedUnitId: map['rewarded_unit_id']?.toString(),
@@ -335,6 +338,7 @@ class AppCloudConfig {
         enabled: false,
         provider: AdsProviderKind.disabled,
         nonPersonalizedOnly: true,
+        consentRequired: false,
       ),
       anonymousAnalytics: AnonymousAnalyticsCloudConfig(
         enabled: false,

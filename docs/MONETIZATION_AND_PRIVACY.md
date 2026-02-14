@@ -32,6 +32,7 @@
 
 - Explicit opt-in for diagnostics upload.
 - Settings toggle for anonymous analytics.
+- Consent toggle for non-personalized ads when regional policy requires consent.
 - Clear explanation of why each data class exists.
 
 ## Compliance baseline

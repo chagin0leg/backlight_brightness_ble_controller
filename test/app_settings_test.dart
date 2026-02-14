@@ -48,5 +48,13 @@ void main() {
       expect(cleared.preferredDeviceAddress, isNull);
       expect(cleared.preferredDeviceName, isNull);
     });
+
+    test('ads consent flag is parsed and serialized', () {
+      final settings = AppSettings.fromMap(<String, dynamic>{
+        'ads_consent_granted': true,
+      });
+      expect(settings.adsConsentGranted, isTrue);
+      expect(settings.toMap()['ads_consent_granted'], isTrue);
+    });
   });
 }

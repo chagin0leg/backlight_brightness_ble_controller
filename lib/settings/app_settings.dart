@@ -7,6 +7,7 @@ class AppSettings {
     this.preferredDeviceAddress,
     this.preferredDeviceName,
     this.diagnosticsUploadConsent = false,
+    this.adsConsentGranted = false,
     this.anonymousAnalyticsEnabled = true,
   });
 
@@ -17,6 +18,7 @@ class AppSettings {
   final String? preferredDeviceAddress;
   final String? preferredDeviceName;
   final bool diagnosticsUploadConsent;
+  final bool adsConsentGranted;
   final bool anonymousAnalyticsEnabled;
 
   factory AppSettings.fromMap(Map<String, dynamic> map) {
@@ -33,6 +35,7 @@ class AppSettings {
       preferredDeviceAddress: _toNullableString(map['preferred_device_address']),
       preferredDeviceName: _toNullableString(map['preferred_device_name']),
       diagnosticsUploadConsent: _toBool(map['diagnostics_upload_consent'], false),
+      adsConsentGranted: _toBool(map['ads_consent_granted'], false),
       anonymousAnalyticsEnabled:
           _toBool(map['anonymous_analytics_enabled'], true),
     );
@@ -47,6 +50,7 @@ class AppSettings {
       'preferred_device_address': preferredDeviceAddress,
       'preferred_device_name': preferredDeviceName,
       'diagnostics_upload_consent': diagnosticsUploadConsent,
+      'ads_consent_granted': adsConsentGranted,
       'anonymous_analytics_enabled': anonymousAnalyticsEnabled,
     };
   }
@@ -61,6 +65,7 @@ class AppSettings {
     String? preferredDeviceName,
     bool clearPreferredDeviceName = false,
     bool? diagnosticsUploadConsent,
+    bool? adsConsentGranted,
     bool? anonymousAnalyticsEnabled,
   }) {
     final normalizedRange = _normalizeRange(
@@ -83,6 +88,7 @@ class AppSettings {
           clearPreferredDeviceName ? null : (preferredDeviceName ?? this.preferredDeviceName),
       diagnosticsUploadConsent:
           diagnosticsUploadConsent ?? this.diagnosticsUploadConsent,
+      adsConsentGranted: adsConsentGranted ?? this.adsConsentGranted,
       anonymousAnalyticsEnabled:
           anonymousAnalyticsEnabled ?? this.anonymousAnalyticsEnabled,
     );
